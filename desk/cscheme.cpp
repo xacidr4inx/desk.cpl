@@ -48,11 +48,6 @@ __declspec(noinline) BOOL NcDrawFrameControl(HDC hdc, RECT* lprc, UINT uType, in
 				else if (type == 2) text = L"1";
 				else if (type == 3) text = L"0";
 			}
-			else if (uType == DFC_SCROLL)
-			{
-				if (type == 1) text = L"t";
-				else if (type == 2) text = L"u";
-			}
 			DrawText(hdc, text, 1, lprc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
 			SetTextColor(hdc, oldTextColor);

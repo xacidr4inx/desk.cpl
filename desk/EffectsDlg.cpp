@@ -1,14 +1,105 @@
 #include "pch.h"
 #include "EffectsDlg.h"
+#include "helper.h"
+#include <exdisp.h>
+
+static bool ReadLargeIconPreference(BOOL& enabled)
+{
+	enabled = FALSE;
+	BYTE data[64] = {};
+	DWORD type = 0;
+	DWORD size = sizeof(data);
+	LSTATUS status = RegGetValueW(HKEY_CURRENT_USER,
+		L"Control Panel\\Desktop\\WindowMetrics", L"Shell Icon Size",
+		RRF_RT_REG_SZ | RRF_RT_REG_DWORD, &type, data, &size);
+	if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
+		return true;
+	if (status != ERROR_SUCCESS)
+		return false;
+	DWORD iconSize = 32;
+	if (type == REG_DWORD && size >= sizeof(DWORD))
+		iconSize = *reinterpret_cast<const DWORD*>(data);
+	else if (type == REG_SZ && size >= sizeof(WCHAR))
+		iconSize = wcstoul(reinterpret_cast<const WCHAR*>(data), nullptr, 10);
+	enabled = iconSize >= 48;
+	return true;
+}
+
+static LSTATUS WriteLargeIconPreference(BOOL enabled)
+{
+	HKEY windowMetrics = nullptr;
+	LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER,
+		L"Control Panel\\Desktop\\WindowMetrics", 0, nullptr, 0,
+		KEY_SET_VALUE, nullptr, &windowMetrics, nullptr);
+	if (status != ERROR_SUCCESS)
+		return status;
+	const WCHAR iconSize[] = L"48";
+	const WCHAR normalSize[] = L"32";
+	LPCWSTR value = enabled ? iconSize : normalSize;
+	status = RegSetValueExW(windowMetrics, L"Shell Icon Size", 0, REG_SZ,
+		reinterpret_cast<const BYTE*>(value),
+		static_cast<DWORD>((lstrlenW(value) + 1) * sizeof(WCHAR)));
+	RegCloseKey(windowMetrics);
+	return status;
+}
+
+static HRESULT ApplyDesktopIconSize(BOOL enabled)
+{
+	CComPtr<IShellWindows> shellWindows;
+	HRESULT hr = CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_LOCAL_SERVER,
+		IID_PPV_ARGS(&shellWindows));
+	if (FAILED(hr))
+		return hr;
+
+	VARIANT location;
+	VARIANT root;
+	VariantInit(&location);
+	VariantInit(&root);
+	long desktopHwnd = 0;
+	CComPtr<IDispatch> desktopDispatch;
+	hr = shellWindows->FindWindowSW(&location, &root, SWC_DESKTOP, &desktopHwnd,
+		SWFO_NEEDDISPATCH, &desktopDispatch);
+	if (FAILED(hr))
+		return hr;
+
+	CComQIPtr<IServiceProvider> serviceProvider(desktopDispatch);
+	if (!serviceProvider)
+		return E_NOINTERFACE;
+
+	CComPtr<IShellBrowser> shellBrowser;
+	hr = serviceProvider->QueryService(SID_STopLevelBrowser,
+		IID_PPV_ARGS(&shellBrowser));
+	if (FAILED(hr))
+		return hr;
+
+	CComPtr<IShellView> shellView;
+	hr = shellBrowser->QueryActiveShellView(&shellView);
+	if (FAILED(hr))
+		return hr;
+
+	CComQIPtr<IFolderView2> folderView(shellView);
+	if (!folderView)
+		return E_NOINTERFACE;
+
+	FOLDERVIEWMODE viewMode;
+	int currentSize = 0;
+	hr = folderView->GetViewModeAndIconSize(&viewMode, &currentSize);
+	if (FAILED(hr))
+		return hr;
+
+	return folderView->SetViewModeAndIconSize(viewMode, enabled ? 48 : 32);
+}
 
 
 BOOL CEffectsDlg::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
+	ApplySystemDialogFont(m_hWnd);
 	_chkAnim = GetDlgItem(1175);
 	_cmbAnim = GetDlgItem(1182);
 	_chkFont = GetDlgItem(1177);
 	_cmbFont = GetDlgItem(1184);
 	_chkShadow = GetDlgItem(1185);
+	_chkLargeIcons = GetDlgItem(1180);
 	_chkDragWnd = GetDlgItem(1179);
 	_chkAltIndicator = GetDlgItem(1181);
 
@@ -17,10 +108,13 @@ BOOL CEffectsDlg::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bH
 	::ComboBox_Enable(_cmbFont, _fSmoothingEnabled);
 
 	// all font smoothing types
-	LPCWSTR items[] = { L"Standard", L"ClearType", };
-	for (int i = 0; i < _countof(items); i++)
+	std::wstring smoothingLabels[] = {
+		LoadDeskString(IDS_STANDARD_SMOOTHING),
+		LoadDeskString(IDS_CLEARTYPE_SMOOTHING),
+	};
+	for (int i = 0; i < _countof(smoothingLabels); i++)
 	{
-		ComboBox_AddString(_cmbFont, items[i]);
+		ComboBox_AddString(_cmbFont, smoothingLabels[i].c_str());
 	}
 
 	SystemParametersInfo(SPI_GETFONTSMOOTHINGTYPE, 0, &_iSmoothingType, 0);
@@ -38,10 +132,13 @@ BOOL CEffectsDlg::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bH
 	::ComboBox_Enable(_cmbAnim, _iAnimEnabled > 0 ? 1 : 0);
 
 	// all scroll types
-	LPCWSTR itemsS[] = { L"Fade effect", L"Scroll effect", };
-	for (int i = 0; i < _countof(itemsS); i++)
+	std::wstring animationLabels[] = {
+		LoadDeskString(IDS_FADE_EFFECT),
+		LoadDeskString(IDS_SCROLL_EFFECT),
+	};
+	for (int i = 0; i < _countof(animationLabels); i++)
 	{
-		ComboBox_AddString(_cmbAnim, itemsS[i]);
+		ComboBox_AddString(_cmbAnim, animationLabels[i].c_str());
 	}
 
 	BOOL fTooltipFade, fMenuFade;
@@ -58,6 +155,8 @@ BOOL CEffectsDlg::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bH
 
 	SystemParametersInfo(SPI_GETDROPSHADOW, 0, &_fDropShadows, 0);
 	Button_SetCheck(_chkShadow, _fDropShadows);
+	ReadLargeIconPreference(_fLargeIcons);
+	Button_SetCheck(_chkLargeIcons, _fLargeIcons);
 
 	SystemParametersInfo(SPI_GETDRAGFULLWINDOWS, 0, &_fDragWindow, 0);
 	Button_SetCheck(_chkDragWnd, _fDragWindow);
@@ -115,6 +214,13 @@ BOOL CEffectsDlg::OnShadowChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 	return 0;
 }
 
+BOOL CEffectsDlg::OnLargeIconsChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
+{
+	_fLargeIcons = Button_GetCheck(hWnd);
+	flags |= UPDATE_ICONS;
+	return 0;
+}
+
 BOOL CEffectsDlg::OnWindowChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
 	_fDragWindow = Button_GetCheck(hWnd);
@@ -132,7 +238,37 @@ BOOL CEffectsDlg::OnAltChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 }
 
 LRESULT CEffectsDlg::OnOK(UINT uNotifyCode, int nID, HWND hWnd, BOOL& bHandled)
-{	
+{
+	if (flags & UPDATE_ICONS)
+	{
+		LSTATUS status = WriteLargeIconPreference(_fLargeIcons);
+		if (status != ERROR_SUCCESS)
+		{
+			WCHAR message[160] = {};
+			StringCchPrintfW(message, ARRAYSIZE(message),
+				LoadDeskString(IDS_ICON_SIZE_SAVE_ERROR).c_str(), status);
+			::MessageBoxW(m_hWnd, message,
+				LoadDeskString(IDS_EFFECTS_TITLE).c_str(), MB_OK | MB_ICONERROR);
+			return 0;
+		}
+		DWORD_PTR broadcastResult = 0;
+		::SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+			reinterpret_cast<LPARAM>(L"WindowMetrics"), SMTO_ABORTIFHUNG,
+			1000, &broadcastResult);
+		::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT,
+			nullptr, nullptr);
+		HRESULT applyResult = ApplyDesktopIconSize(_fLargeIcons);
+		if (FAILED(applyResult))
+		{
+			WCHAR message[160] = {};
+			StringCchPrintfW(message, ARRAYSIZE(message),
+				LoadDeskString(IDS_ICON_SIZE_UPDATE_ERROR).c_str(),
+				static_cast<unsigned int>(applyResult));
+			::MessageBoxW(m_hWnd, message,
+				LoadDeskString(IDS_EFFECTS_TITLE).c_str(), MB_OK | MB_ICONWARNING);
+		}
+	}
+
 	if (flags & UPDATE_ANIM)
 	{
 		// set both menu and tooltip, like xp

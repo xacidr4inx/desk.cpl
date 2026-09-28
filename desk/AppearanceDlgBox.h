@@ -34,11 +34,14 @@ class CAppearanceDlgBox :
 {
 public:
 	enum {IDD = IDD_APPEARANCEBOX };
+	enum { WM_OPEN_COLOR_PALETTE = WM_APP + 0x2C };
 	void OnPreviewClick(POINT pt);
 
 private:
 	BEGIN_MSG_MAP(CAppearanceDlgBox)
 		MESSAGE_HANDLER(WM_INITDIALOG, OnInitDialog)
+		MESSAGE_HANDLER(WM_DRAWITEM, OnDrawItem)
+		MESSAGE_HANDLER(WM_OPEN_COLOR_PALETTE, OnOpenColorPalette)
 		COMMAND_HANDLER(1126, CBN_SELCHANGE, OnComboboxChange)
 		COMMAND_HANDLER(1129, CBN_SELCHANGE, OnFontChange)
 		COMMAND_HANDLER(1130, CBN_SELCHANGE, OnFontSizeChange)
@@ -56,11 +59,13 @@ private:
 	END_MSG_MAP()
 
 	BOOL OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+	LRESULT OnDrawItem(UINT message, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
 	void OnClose();
 	LRESULT OnOK(UINT uNotifyCode, int nID, HWND hWnd, BOOL& bHandled);
 	LRESULT OnCancel(UINT uNotifyCode, int nID, HWND hWnd, BOOL& bHandled);
 	BOOL OnComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnColorPick(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
+	LRESULT OnOpenColorPalette(UINT message, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
 	BOOL OnSpinnerChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnSpinnerDelta(WPARAM wParam, LPNMHDR nmhdr, BOOL& bHandled);
 	BOOL OnFontChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
@@ -69,8 +74,8 @@ private:
 	BOOL OnStyle(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 
 	void _UpdateControls(SCHEMEINFO* info);
-	void _UpdateBitmaps(SCHEMEINFO* info);
-	void _UpdateColorButton(HWND hButton, bool isActive, COLORREF color);
+	void _RedrawColorButtons();
+	bool _GetColorTarget(UINT controlId, WORD& target);
 	void _UpdateSizeItem(SCHEMEINFO* info);
 	void _UpdateFont(SCHEMEINFO* info);
 
@@ -78,7 +83,7 @@ private:
 	void _UpdatePreview(BOOL fClr);
 	LOGFONT* _GetLogFontPtr(SCHEMEINFO* info);
 
-	HWND hElementCombobox;
+	HWND hElementCombobox = nullptr;
 	HWND hSizeUpdown;
 	HWND hColor1;
 	HWND hColor2;

@@ -7,19 +7,500 @@
 
 #include "pch.h"
 #include "BackgroundPage.h"
+#include "ColorPalette.h"
+
 #include "desk.h"
 #include "helper.h"
 #include "wndprvw.h"
-#include "DeskIcons.h"
 
 using namespace Microsoft::WRL;
 using namespace Microsoft::WRL::Details;
 
+namespace
+{
+	constexpr UINT kThemeUiPaletteStartCapture = WM_APP + 0x2B;
+	constexpr int kThemeUiPaletteGridId = 1205;
+	constexpr int kThemeUiPaletteOtherId = 1207;
+	constexpr int kThemeUiPaletteSwatchId = 1206;
+	constexpr int kThemeUiPaletteColumns = 4;
+	constexpr int kThemeUiPaletteMaxColors = 20;
+	constexpr INT_PTR kThemeUiPaletteOtherResult = kThemeUiPaletteOtherId;
+	constexpr INT_PTR kThemeUiPaletteColorResult = 1;
+
+	struct ThemeUiPaletteState
+	{
+		HWND ownerButton = nullptr;
+		COLORREF colors[kThemeUiPaletteMaxColors] = {};
+		int colorCount = 0;
+		int cellWidth = 1;
+		int cellHeight = 1;
+		int focusIndex = -1;
+		int currentColorIndex = -1;
+		COLORREF currentColor = RGB(0, 0, 0);
+		INT_PTR result = 2;
+		bool captureStarted = false;
+		bool closing = false;
+	};
+
+	int ThemeUiPaletteColorIndex(const ThemeUiPaletteState& state, POINT point)
+	{
+		if (point.x < 0 || point.y < 0) return -1;
+		int column = point.x / state.cellWidth;
+		int row = point.y / state.cellHeight;
+		if (column >= kThemeUiPaletteColumns) return -1;
+		int index = row * kThemeUiPaletteColumns + column;
+		return index >= 0 && index < state.colorCount ? index : -1;
+	}
+
+	void DrawThemeUiPaletteCell(HDC dc, RECT rect, COLORREF color, bool focused)
+	{
+		if (focused)
+		{
+			HBRUSH black = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+			FrameRect(dc, &rect, black);
+			InflateRect(&rect, -2, -2);
+		}
+		else
+		{
+			FrameRect(dc, &rect, GetSysColorBrush(COLOR_BTNFACE));
+			InflateRect(&rect, -GetSystemMetrics(SM_CXBORDER),
+				-GetSystemMetrics(SM_CYBORDER));
+			DrawEdge(dc, &rect, EDGE_SUNKEN, BF_RECT | BF_ADJUST);
+		}
+
+		HBRUSH brush = CreateSolidBrush(color);
+		if (brush)
+		{
+			FillRect(dc, &rect, brush);
+			DeleteObject(brush);
+		}
+		if (focused)
+			DrawFocusRect(dc, &rect);
+	}
+
+	void DrawThemeUiPaletteItems(const DRAWITEMSTRUCT* drawItem, ThemeUiPaletteState& state)
+	{
+		if (drawItem->CtlID == kThemeUiPaletteGridId)
+		{
+			for (int index = 0; index < state.colorCount; ++index)
+			{
+				RECT cell = drawItem->rcItem;
+				int column = index % kThemeUiPaletteColumns;
+				int row = index / kThemeUiPaletteColumns;
+				cell.left += column * state.cellWidth;
+				cell.top += row * state.cellHeight;
+				cell.right = min(cell.right, cell.left + state.cellWidth);
+				cell.bottom = min(cell.bottom, cell.top + state.cellHeight);
+				DrawThemeUiPaletteCell(drawItem->hDC, cell, state.colors[index],
+					index == state.focusIndex);
+			}
+		}
+		else if (drawItem->CtlID == kThemeUiPaletteSwatchId && state.currentColorIndex < 0)
+		{
+			RECT swatch = drawItem->rcItem;
+			DrawThemeUiPaletteCell(drawItem->hDC, swatch, state.currentColor,
+				state.focusIndex == state.colorCount);
+		}
+	}
+
+	void PositionThemeUiPalette(HWND dialog, HWND ownerButton)
+	{
+		RECT buttonRect = {};
+		RECT dialogRect = {};
+		if (!GetWindowRect(ownerButton, &buttonRect) || !GetWindowRect(dialog, &dialogRect))
+			return;
+
+		MONITORINFO monitor = { sizeof(monitor) };
+		HMONITOR hMonitor = MonitorFromRect(&buttonRect, MONITOR_DEFAULTTONEAREST);
+		if (!GetMonitorInfoW(hMonitor, &monitor))
+			return;
+
+		int width = RECTWIDTH(dialogRect);
+		int height = RECTHEIGHT(dialogRect);
+		int left = buttonRect.left;
+		int top = buttonRect.bottom;
+		if (left + width > monitor.rcMonitor.right)
+			left = monitor.rcMonitor.right - width - 1;
+		if (left < monitor.rcMonitor.left)
+			left = monitor.rcMonitor.left;
+		if (top + height > monitor.rcMonitor.bottom)
+			top = buttonRect.top - height;
+		if (top < monitor.rcMonitor.top)
+			top = monitor.rcMonitor.top;
+
+		SetWindowPos(dialog, HWND_TOP, left, top, width, height,
+			SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+	}
+
+	void CloseThemeUiPalette(HWND dialog, ThemeUiPaletteState& state, INT_PTR result)
+	{
+		if (state.closing)
+			return;
+		state.closing = true;
+		state.result = result;
+		if (GetCapture() == dialog)
+			ReleaseCapture();
+		DestroyWindow(dialog);
+	}
+
+	INT_PTR CALLBACK ThemeUiPaletteDialogProc(HWND dialog, UINT message,
+		WPARAM wParam, LPARAM lParam)
+	{
+		auto* state = reinterpret_cast<ThemeUiPaletteState*>(
+			GetWindowLongPtrW(dialog, DWLP_USER));
+		if (message == WM_INITDIALOG)
+		{
+			ApplySystemDialogFont(dialog);
+			state = reinterpret_cast<ThemeUiPaletteState*>(lParam);
+			SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+			HWND grid = GetDlgItem(dialog, kThemeUiPaletteGridId);
+			RECT gridRect = {};
+			GetClientRect(grid, &gridRect);
+			state->cellWidth = max(1, (RECTWIDTH(gridRect) + kThemeUiPaletteColumns - 1) /
+				kThemeUiPaletteColumns);
+			int rows = (state->colorCount + kThemeUiPaletteColumns - 1) /
+				kThemeUiPaletteColumns;
+			state->cellHeight = max(1, (RECTHEIGHT(gridRect) + rows - 1) / rows);
+			HWND swatch = GetDlgItem(dialog, kThemeUiPaletteSwatchId);
+			ShowWindow(swatch, state->currentColorIndex < 0 ? SW_SHOW : SW_HIDE);
+			PositionThemeUiPalette(dialog, state->ownerButton);
+			// Activation can send cancel/capture messages during initialization.
+			// Acquire capture after the popup has been shown.
+			PostMessageW(dialog, kThemeUiPaletteStartCapture, 0, 0);
+			return TRUE;
+		}
+		if (!state)
+			return FALSE;
+
+		switch (message)
+		{
+		case WM_SETCURSOR:
+			if (LOWORD(lParam) == HTCLIENT)
+			{
+				SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+				return TRUE;
+			}
+			break;
+
+		case kThemeUiPaletteStartCapture:
+			if (!state->closing)
+			{
+				SetCapture(dialog);
+				state->captureStarted = GetCapture() == dialog;
+				SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+			}
+			return TRUE;
+
+		case WM_DRAWITEM:
+			DrawThemeUiPaletteItems(reinterpret_cast<DRAWITEMSTRUCT*>(lParam), *state);
+			return TRUE;
+
+		case WM_MOUSEMOVE:
+		{
+			POINT point = { static_cast<short>(LOWORD(lParam)),
+				static_cast<short>(HIWORD(lParam)) };
+			HWND child = ChildWindowFromPoint(dialog, point);
+			int newFocus = -1;
+			if (child && GetDlgCtrlID(child) == kThemeUiPaletteGridId)
+			{
+				MapWindowPoints(dialog, child, &point, 1);
+				newFocus = ThemeUiPaletteColorIndex(*state, point);
+			}
+			else if (child && GetDlgCtrlID(child) == kThemeUiPaletteSwatchId &&
+				state->currentColorIndex < 0)
+				newFocus = state->colorCount;
+			if (newFocus != state->focusIndex)
+			{
+				state->focusIndex = newFocus;
+				InvalidateRect(GetDlgItem(dialog, kThemeUiPaletteGridId), nullptr, FALSE);
+				InvalidateRect(GetDlgItem(dialog, kThemeUiPaletteSwatchId), nullptr, FALSE);
+			}
+			return TRUE;
+		}
+
+		case WM_LBUTTONUP:
+		{
+			POINT point = { static_cast<short>(LOWORD(lParam)),
+				static_cast<short>(HIWORD(lParam)) };
+			HWND child = ChildWindowFromPoint(dialog, point);
+			int controlId = child && child != dialog ? GetDlgCtrlID(child) : 0;
+			if (controlId == kThemeUiPaletteGridId)
+			{
+				MapWindowPoints(dialog, child, &point, 1);
+				int index = ThemeUiPaletteColorIndex(*state, point);
+				if (index >= 0)
+				{
+					state->currentColor = state->colors[index];
+					CloseThemeUiPalette(dialog, *state, kThemeUiPaletteColorResult);
+					return TRUE;
+				}
+			}
+			else if (controlId == kThemeUiPaletteOtherId)
+			{
+				CloseThemeUiPalette(dialog, *state, kThemeUiPaletteOtherResult);
+				return TRUE;
+			}
+			else if (controlId == kThemeUiPaletteSwatchId && state->currentColorIndex < 0)
+			{
+				CloseThemeUiPalette(dialog, *state, kThemeUiPaletteColorResult);
+				return TRUE;
+			}
+			CloseThemeUiPalette(dialog, *state, 2);
+			return TRUE;
+		}
+
+		case WM_COMMAND:
+			if (LOWORD(wParam) == kThemeUiPaletteOtherId)
+			{
+				CloseThemeUiPalette(dialog, *state, kThemeUiPaletteOtherResult);
+				return TRUE;
+			}
+			if (LOWORD(wParam) == IDCANCEL)
+			{
+				CloseThemeUiPalette(dialog, *state, 2);
+				return TRUE;
+			}
+			break;
+
+		case WM_CAPTURECHANGED:
+			if (!state->closing && state->captureStarted &&
+				reinterpret_cast<HWND>(lParam) != dialog)
+				CloseThemeUiPalette(dialog, *state, 2);
+			return TRUE;
+
+		case WM_CANCELMODE:
+			// Ignore startup cancel mode. Later cancel mode dismisses the popup.
+			if (!state->closing && state->captureStarted)
+				CloseThemeUiPalette(dialog, *state, 2);
+			return TRUE;
+
+		case WM_NCDESTROY:
+			state->closing = true;
+			if (GetCapture() == dialog)
+				ReleaseCapture();
+			return FALSE;
+		}
+		return FALSE;
+	}
+
+	bool PickThemeUiColorImpl(HWND ownerButton, COLORREF initialColor, COLORREF& chosenColor)
+	{
+		ThemeUiPaletteState state = {};
+		state.ownerButton = ownerButton;
+		state.currentColor = initialColor & 0x00ffffff;
+		static constexpr COLORREF themeUiColors[] =
+		{
+			RGB(255, 255, 255), RGB(0, 0, 0), RGB(192, 192, 192), RGB(128, 128, 128),
+			RGB(255, 0, 0), RGB(128, 0, 0), RGB(255, 255, 0), RGB(128, 128, 0),
+			RGB(0, 255, 0), RGB(0, 128, 0), RGB(0, 255, 255), RGB(0, 128, 128),
+			RGB(0, 0, 255), RGB(0, 0, 128), RGB(255, 0, 255), RGB(128, 0, 128)
+		};
+		static_assert(ARRAYSIZE(themeUiColors) == 16);
+		for (COLORREF color : themeUiColors)
+			state.colors[state.colorCount++] = color;
+
+		HPALETTE defaultPalette = static_cast<HPALETTE>(GetStockObject(DEFAULT_PALETTE));
+		PALETTEENTRY extraColors[4] = {};
+		if (defaultPalette && GetPaletteEntries(defaultPalette, 8, ARRAYSIZE(extraColors),
+			extraColors) == ARRAYSIZE(extraColors))
+		{
+			for (const PALETTEENTRY& entry : extraColors)
+				state.colors[state.colorCount++] = RGB(entry.peRed, entry.peGreen, entry.peBlue);
+		}
+
+		for (int i = 0; i < state.colorCount; ++i)
+		{
+			if (state.colors[i] == state.currentColor)
+			{
+				state.currentColorIndex = i;
+				state.focusIndex = i;
+				break;
+			}
+		}
+		if (state.currentColorIndex < 0)
+			state.focusIndex = state.colorCount;
+
+		HWND dialogOwner = GetAncestor(ownerButton, GA_ROOT);
+		if (!dialogOwner)
+			dialogOwner = ownerButton;
+		HWND dialog = CreateDialogParamW(g_hinst,
+			MAKEINTRESOURCEW(IDD_THEMEUI_COLOR_PICKER), dialogOwner,
+			ThemeUiPaletteDialogProc, reinterpret_cast<LPARAM>(&state));
+		if (!dialog)
+			return false;
+		ShowWindow(dialog, SW_SHOW);
+
+		MSG message = {};
+		while (IsWindow(dialog))
+		{
+			BOOL status = GetMessageW(&message, nullptr, 0, 0);
+			if (status <= 0)
+			{
+				if (status == 0)
+					PostQuitMessage(static_cast<int>(message.wParam));
+				DestroyWindow(dialog);
+				break;
+			}
+			if (!IsDialogMessageW(dialog, &message))
+			{
+				TranslateMessage(&message);
+				DispatchMessageW(&message);
+			}
+		}
+		INT_PTR result = state.result;
+		if (result == kThemeUiPaletteColorResult)
+		{
+			chosenColor = state.currentColor;
+			return true;
+		}
+		if (result != kThemeUiPaletteOtherResult)
+			return false;
+
+		CHOOSECOLOR otherColor = {};
+		if (!ColorPicker(initialColor, dialogOwner, &otherColor, TRUE))
+			return false;
+		chosenColor = otherColor.rgbResult;
+		return true;
+	}
+
+}
+
+bool PickThemeUiColor(HWND ownerButton, COLORREF initialColor, COLORREF& chosenColor)
+{
+	return PickThemeUiColorImpl(ownerButton, initialColor, chosenColor);
+}
+
+static LRESULT CALLBACK ColorButtonSubclassProc(HWND button, UINT message,
+	WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR)
+{
+	static constexpr LPCWSTR hotProperty = L"DeskCplColorButtonHot";
+	if (message == WM_MOUSEMOVE && IsWindowEnabled(button))
+	{
+		if (!GetPropW(button, hotProperty))
+		{
+			SetPropW(button, hotProperty, reinterpret_cast<HANDLE>(1));
+			TRACKMOUSEEVENT tracking = { sizeof(tracking), TME_LEAVE, button, 0 };
+			TrackMouseEvent(&tracking);
+			InvalidateRect(button, nullptr, FALSE);
+		}
+	}
+	else if (message == WM_MOUSELEAVE || message == WM_ENABLE || message == WM_CANCELMODE)
+	{
+		RemovePropW(button, hotProperty);
+		InvalidateRect(button, nullptr, FALSE);
+	}
+	else if (message == WM_THEMECHANGED)
+	{
+		InvalidateRect(button, nullptr, TRUE);
+	}
+	else if (message == WM_NCDESTROY)
+	{
+		RemovePropW(button, hotProperty);
+		RemoveWindowSubclass(button, ColorButtonSubclassProc, subclassId);
+	}
+	return DefSubclassProc(button, message, wParam, lParam);
+}
+
+HWND InitializeThemeUiColorButton(HWND button)
+{
+	// Retain the ported ThemeUI button and palette, even with older localized
+	// templates which still request bitmap buttons.
+	LONG_PTR style = GetWindowLongPtrW(button, GWL_STYLE);
+	style &= ~(BS_TYPEMASK | BS_BITMAP | BS_ICON);
+	SetWindowLongPtrW(button, GWL_STYLE, style | BS_OWNERDRAW);
+	SendMessageW(button, BM_SETSTYLE, BS_OWNERDRAW, TRUE);
+	SetWindowSubclass(button, ColorButtonSubclassProc, 1, 0);
+	return button;
+}
+
+// Ported from ref/themeui.dll 6.00.3790.5211:
+// CAdvAppearancePage::_DrawButton (7ff5efce5e0), _DrawDownArrow (7ff5efce420).
+void DrawThemeUiColorButton(const DRAWITEMSTRUCT& drawItem, COLORREF color)
+{
+	const UINT state = drawItem.itemState;
+	const bool disabled = (state & ODS_DISABLED) != 0;
+	const bool pressed = (state & ODS_SELECTED) != 0;
+	const bool hot = (state & ODS_HOTLIGHT) != 0 ||
+		GetPropW(drawItem.hwndItem, L"DeskCplColorButtonHot") != nullptr;
+	const bool focused = (state & ODS_FOCUS) != 0 && !disabled;
+	const UINT dpi = GetDpiForWindow(drawItem.hwndItem);
+	const int edgeX = GetSystemMetricsForDpi(SM_CXEDGE, dpi);
+	const int edgeY = GetSystemMetricsForDpi(SM_CYEDGE, dpi);
+	const int dx = max(1, edgeX / 2);
+	const int dy = max(1, edgeY / 2);
+	const int pixel = max(1, MulDiv(1, dpi, 96));
+	RECT content = drawItem.rcItem;
+	bool themed = false;
+	HTHEME theme = OpenThemeData(drawItem.hwndItem, L"Button");
+	if (theme)
+	{
+		const int themeState = pressed ? PBS_PRESSED : hot ? PBS_HOT :
+			disabled ? PBS_DISABLED : focused ? PBS_DEFAULTED : PBS_NORMAL;
+		if (IsThemeBackgroundPartiallyTransparent(theme, BP_PUSHBUTTON, themeState))
+			DrawThemeParentBackground(drawItem.hwndItem, drawItem.hDC, &drawItem.rcItem);
+		if (SUCCEEDED(DrawThemeBackground(theme, drawItem.hDC, BP_PUSHBUTTON,
+			themeState, &drawItem.rcItem, nullptr)))
+			themed = SUCCEEDED(GetThemeBackgroundContentRect(theme, drawItem.hDC,
+				BP_PUSHBUTTON, themeState, &drawItem.rcItem, &content));
+		CloseThemeData(theme);
+	}
+	if (!themed)
+	{
+		content = drawItem.rcItem;
+		DrawEdge(drawItem.hDC, &content, pressed ? EDGE_SUNKEN : EDGE_RAISED,
+			BF_RECT | BF_ADJUST);
+		if (pressed) OffsetRect(&content, pixel, pixel);
+		FillRect(drawItem.hDC, &content, GetSysColorBrush(COLOR_3DFACE));
+	}
+	if (focused)
+	{
+		RECT focus = content;
+		InflateRect(&focus, -dx, -dy);
+		DrawFocusRect(drawItem.hDC, &focus);
+	}
+	InflateRect(&content, pixel - dx, -edgeY);
+	content.left += edgeX;
+
+	// Original arrow geometry, including its embossed disabled state.
+	const int anchorX = content.right - edgeX;
+	const int arrowY = content.top + (content.bottom - content.top) / 2 - pixel;
+	if (disabled)
+	{
+		for (int row = 0; row < 3; ++row)
+		{
+			RECT line = { anchorX - (4 - row) * pixel, arrowY + (row + 1) * pixel,
+				anchorX + (1 - row) * pixel, arrowY + (row + 2) * pixel };
+			FillRect(drawItem.hDC, &line, GetSysColorBrush(COLOR_3DHIGHLIGHT));
+		}
+	}
+	for (int row = 0; row < 3; ++row)
+	{
+		RECT line = { anchorX - (5 - row) * pixel, arrowY + row * pixel,
+			anchorX - row * pixel, arrowY + (row + 1) * pixel };
+		FillRect(drawItem.hDC, &line,
+			GetSysColorBrush(disabled ? COLOR_3DSHADOW : COLOR_BTNTEXT));
+	}
+	content.right = anchorX - 5 * pixel;
+
+	// ThemeUI places a thin etched separator before the arrow, then leaves
+	// a metrics-based gap between the separator and the black swatch frame.
+	InflateRect(&content, -dx, 0);
+	DrawEdge(drawItem.hDC, &content, EDGE_ETCHED, BF_RIGHT);
+	content.right -= edgeX * 2 + dx;
+	if (disabled || content.right <= content.left || content.bottom <= content.top)
+		return;
+	FrameRect(drawItem.hDC, &content, GetSysColorBrush(COLOR_BTNTEXT));
+	InflateRect(&content, -dx, -dy);
+	if (content.right <= content.left || content.bottom <= content.top) return;
+	HBRUSH brush = CreateSolidBrush(color);
+	if (brush)
+	{
+		FillRect(drawItem.hDC, &content, brush);
+		DeleteObject(brush);
+	}
+}
+
 std::vector<LPWSTR> carouselWallpapers;
-const COMDLG_FILTERSPEC file_types[] = {
-	{L"All Picture Files (*.bmp;*.gif;*.jpg;*.jpeg;*.dib;*.png)",
-	L"*.bmp;*.gif;*.jpg;*.jpeg;*.dib;*.png"},
-};
 
 struct SlideshowThreadData {
 	HWND wnd;
@@ -63,9 +544,11 @@ void SlideshowWorkerThread(void* lpParam)
 
 BOOL CBackgroundDlgProc::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
+	ApplySystemDialogFont(m_hWnd);
 	hListView = GetDlgItem(1202);
 	hBackPreview = GetDlgItem(1200);
 	hPosCombobox = GetDlgItem(1205);
+	InitializeThemeUiColorButton(GetDlgItem(1207));
 	backPreviewSize = GetClientSIZE(hBackPreview);
 	selCount = 0;
 	fWallpaperApply = TRUE;
@@ -173,6 +656,7 @@ BOOL CBackgroundDlgProc::OnBgSizeChange(UINT code, UINT id, HWND hWnd, BOOL& bHa
 	selectedTheme->posChanged = ComboBox_GetCurSel(hPosCombobox);
 	_UpdatePreview(UPDATE_WALLPAPER);
 
+	wallpaperApplyPending = true;
 	SetModified(TRUE);
 	return 0;
 }
@@ -180,6 +664,9 @@ BOOL CBackgroundDlgProc::OnBgSizeChange(UINT code, UINT id, HWND hWnd, BOOL& bHa
 BOOL CBackgroundDlgProc::OnBrowse(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
 	LPWSTR path = NULL;
+	std::wstring pictureLabel = LoadDeskString(IDS_ALL_PICTURE_FILES_LABEL);
+	constexpr wchar_t picturePatterns[] = L"*.bmp;*.gif;*.jpg;*.jpeg;*.dib;*.png";
+	const COMDLG_FILTERSPEC fileTypes[] = {{pictureLabel.c_str(), picturePatterns}};
 
 	IFileDialog* pfd;
 	HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
@@ -190,12 +677,12 @@ BOOL CBackgroundDlgProc::OnBrowse(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 		hr = pfd->GetOptions(&dwFlags);
 
 		// set the file types
-		hr = pfd->SetFileTypes(ARRAYSIZE(file_types), file_types);
+		hr = pfd->SetFileTypes(ARRAYSIZE(fileTypes), fileTypes);
 
 		// the first element from the array
 		hr = pfd->SetFileTypeIndex(1);
 
-		pfd->SetTitle(L"Browse");
+		pfd->SetTitle(LoadDeskString(IDS_BROWSE).c_str());
 
 		// Show the dialog
 		hr = pfd->Show(hWnd);
@@ -218,7 +705,11 @@ BOOL CBackgroundDlgProc::OnBrowse(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 		ofn.lpstrFile = szFile;
 		ofn.lpstrFile[0] = '\0';
 		ofn.nMaxFile = sizeof(szFile);
-		ofn.lpstrFilter = L"All Picture Files (*.bmp;*.gif;*.jpg;*.jpeg;*.dib;*.png)\0*.bmp;*.gif;*.jpg;*.jpeg;*.dib;*.png\0";
+		std::wstring filter = pictureLabel;
+		filter.push_back(L'\0');
+		filter += picturePatterns;
+		filter.append(2, L'\0');
+		ofn.lpstrFilter = filter.c_str();
 		ofn.nFilterIndex = 1;
 		ofn.lpstrFileTitle = NULL;
 		ofn.nMaxFileTitle = 0;
@@ -242,14 +733,24 @@ BOOL CBackgroundDlgProc::OnBrowse(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 
 BOOL CBackgroundDlgProc::OnColorPick(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
-	CHOOSECOLOR cc = { 0 };
-	if (ColorPicker(GetDeskopColor(), hWnd, &cc) == TRUE)
+	// Defer the popup until the button has completed releasing its mouse capture.
+	::PostMessageW(m_hWnd, WM_OPEN_COLOR_PALETTE, reinterpret_cast<WPARAM>(hWnd), 0);
+	return 0;
+}
+
+LRESULT CBackgroundDlgProc::OnOpenColorPalette(UINT, WPARAM wParam, LPARAM, BOOL&)
+{
+	HWND ownerButton = reinterpret_cast<HWND>(wParam);
+	COLORREF chosenColor = GetDeskopColor();
+	if (PickThemeUiColor(ownerButton, chosenColor, chosenColor))
 	{
-		selectedTheme->newColor = cc.rgbResult;
+		selectedTheme->newColor = chosenColor;
+		selectedTheme->fCustomDesktopColorPending = true;
 
 		_UpdateButtonBmp();
 		_UpdatePreview(UPDATE_SOLIDCLR);
 
+		wallpaperApplyPending = true;
 		SetModified(TRUE);
 	}
 	return 0;
@@ -257,28 +758,48 @@ BOOL CBackgroundDlgProc::OnColorPick(UINT code, UINT id, HWND hWnd, BOOL& bHandl
 
 BOOL CBackgroundDlgProc::OnDeskCustomize(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
-	/*
-	WTL::CPropertySheet sheet(L"Display Properties");
-	sheet.m_psh.dwFlags |= PSH_NOAPPLYNOW;
-
-	// use the dialog template from shell32
-	HINSTANCE hShell32 = LoadLibraryEx(L"shell32.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
-	if (hShell32)
+	WCHAR windowsDirectory[MAX_PATH] = {};
+	WCHAR rundll32Path[MAX_PATH] = {};
+	WCHAR deskCplPath[MAX_PATH] = {};
+	WCHAR parameters[MAX_PATH * 2] = {};
+	if (!::GetWindowsDirectoryW(windowsDirectory, ARRAYSIZE(windowsDirectory)) ||
+		FAILED(StringCchPrintfW(rundll32Path, ARRAYSIZE(rundll32Path),
+			L"%s\\System32\\rundll32.exe", windowsDirectory)) ||
+		FAILED(StringCchPrintfW(deskCplPath, ARRAYSIZE(deskCplPath),
+			L"%s\\System32\\desk.cpl", windowsDirectory)) ||
+		FAILED(StringCchPrintfW(parameters, ARRAYSIZE(parameters),
+			L"shell32.dll,Control_RunDLL \"%s\",,0", deskCplPath)))
 	{
-		HINSTANCE hOldRes = _AtlBaseModule.GetResourceInstance();
-		_AtlBaseModule.SetResourceInstance(hShell32);
-
-		CDesktopIconsDlg dlg;
-		sheet.AddPage(dlg);
-		_AtlBaseModule.SetResourceInstance(hOldRes);
-
-		FreeLibrary(hShell32);
+		::MessageBoxW(m_hWnd, LoadDeskString(IDS_DESKTOP_ITEMS_OPEN_ERROR).c_str(),
+			LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
+		return 0;
 	}
-	sheet.DoModal();
-	*/
 
-	ShellExecute(0, L"open", L"Rundll32.exe", L"shell32.dll,Control_RunDLL desk.cpl,,0", 0, SW_SHOW);
+	HINSTANCE launchResult = ::ShellExecuteW(m_hWnd, L"open", rundll32Path,
+		parameters, windowsDirectory, SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(launchResult) <= 32)
+	{
+		WCHAR message[160] = {};
+		StringCchPrintfW(message, ARRAYSIZE(message),
+			LoadDeskString(IDS_DESKTOP_ITEMS_OPEN_ERROR_CODE).c_str(),
+			reinterpret_cast<INT_PTR>(launchResult));
+		::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
+	}
 	return 0;
+}
+
+LRESULT CBackgroundDlgProc::OnDrawItem(UINT, WPARAM, LPARAM lParam, BOOL& bHandled)
+{
+	auto* drawItem = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+	if (!drawItem || drawItem->CtlID != 1207 || drawItem->CtlType != ODT_BUTTON)
+	{
+		bHandled = FALSE;
+		return 0;
+	}
+	COLORREF color = selectedTheme && selectedTheme->fCustomDesktopColorPending
+		? selectedTheme->newColor : GetDeskopColor();
+	DrawThemeUiColorButton(*drawItem, color);
+	return TRUE;
 }
 
 BOOL CBackgroundDlgProc::OnWallpaperSelection(WPARAM wParam, LPNMHDR nmhdr, BOOL& bHandled)
@@ -306,6 +827,7 @@ BOOL CBackgroundDlgProc::OnWallpaperSelection(WPARAM wParam, LPNMHDR nmhdr, BOOL
 		selectedTheme->customWallpaperSelection = !selectionPicker;
 
 		_UpdatePreview(UPDATE_WALLPAPER | UPDATE_SOLIDCLR);
+		wallpaperApplyPending = true;
 		SetModified(TRUE);
 
 	}
@@ -327,6 +849,7 @@ BOOL CBackgroundDlgProc::OnWallpaperSelection(WPARAM wParam, LPNMHDR nmhdr, BOOL
 		}
 
 		_UpdatePreview(UPDATE_WALLPAPER | UPDATE_SOLIDCLR);
+		wallpaperApplyPending = true;
 		SetModified(TRUE);
 	}
 	else if (pnmv->uOldState & LVIS_SELECTED && selCount > 1)
@@ -340,8 +863,7 @@ BOOL CBackgroundDlgProc::OnWallpaperSelection(WPARAM wParam, LPNMHDR nmhdr, BOOL
 
 BOOL CBackgroundDlgProc::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
-	printf("WM_SETTINGCHANGED:\n");
-	if (!fWallpaperApply)
+	if (!fWallpaperApply && !wallpaperApplyPending)
 	{
 		AddMissingWallpapers();
 		SelectCurrentWallpaper();
@@ -358,11 +880,15 @@ BOOL CBackgroundDlgProc::OnSlideshowBegin(UINT, WPARAM, LPARAM, BOOL&)
 BOOL CBackgroundDlgProc::OnAddSlideshowItems(UINT, WPARAM, LPARAM lParam, BOOL&)
 {
 	wchar_t* path = (wchar_t*)lParam;
+	// A late restore message must not overwrite a wallpaper the user has just
+	// selected while the slideshow list was being populated.
+	if (wallpaperApplyPending)
+	{
+		CoTaskMemFree(path);
+		return 0;
+	}
 
-	LVFINDINFO findInfo = { 0 };
-	findInfo.flags = LVFI_STRING;
-	findInfo.psz = PathFindFileName(path);
-	int inde = ListView_FindItem(hListView, -1, &findInfo);
+	int inde = FindItemByPath(path);
 	if (inde == -1)
 	{
 		inde = AddItem(hListView, ListView_GetItemCount(hListView), path);
@@ -373,12 +899,17 @@ BOOL CBackgroundDlgProc::OnAddSlideshowItems(UINT, WPARAM, LPARAM lParam, BOOL&)
 
 	CoTaskMemFree(path);
 	fWallpaperApply = FALSE;
+	wallpaperApplyPending = false;
 	SetModified(FALSE);
 	return 0;
 }
 
 BOOL CBackgroundDlgProc::OnApply()
 {
+	const bool themeStateChanged = wallpaperApplyPending ||
+		selectedTheme->customWallpaperSelection || selectedTheme->posChanged != -1 ||
+		selectedTheme->newColor != 0xB0000000 || selectedTheme->fCustomDesktopColorPending;
+
 	if (selectedTheme->posChanged != -1)
 	{
 		int index = ComboBox_GetCurSel(hPosCombobox);
@@ -389,6 +920,7 @@ BOOL CBackgroundDlgProc::OnApply()
 	{
 		pDesktopWallpaper->SetBackgroundColor(selectedTheme->newColor);
 		selectedTheme->newColor = 0xB0000000;
+		selectedTheme->fCustomDesktopColorPending = false;
 	}
 	if (selectedTheme->customWallpaperSelection)
 	{
@@ -435,11 +967,31 @@ BOOL CBackgroundDlgProc::OnApply()
 
 	selectedTheme->updateWallThemesPg = true;
 	selectedTheme->useDesktopColor = true;
-	UpdateCustomTheme();
 
 	_UpdatePreview(UPDATE_WALLPAPER | UPDATE_SOLIDCLR);
 	_UpdateButtonBmp();
 
+	// Wallpaper APIs update the live desktop directly. Ask Theme Manager to
+	// snapshot that applied state too, so its Unsaved/Modified theme stays in
+	// sync with the actual wallpaper and position.
+	if (themeStateChanged && pThemeManager)
+	{
+		HRESULT themeUpdate = pThemeManager->UpdateCustomTheme();
+		if (FAILED(themeUpdate))
+		{
+			WCHAR message[256] = {};
+			StringCchPrintfW(message, ARRAYSIZE(message),
+				LoadDeskString(IDS_WALLPAPER_DERIVATIVE_SYNC_ERROR).c_str(),
+				themeUpdate);
+			::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONWARNING);
+			SetModified(TRUE);
+			return 0;
+		}
+		pThemeManager->Refresh();
+		ForgetSavedThemePathForCurrentTheme();
+	}
+
+	wallpaperApplyPending = false;
 	SetModified(FALSE);
 	return 0;
 }
@@ -480,12 +1032,16 @@ int CBackgroundDlgProc::AddItem(HWND hListView, int rowIndex, LPCWSTR text)
 	}
 
 	// why is winapi so ass
+	WCHAR displayName[MAX_PATH] = {};
+	StringCchCopyW(displayName, ARRAYSIZE(displayName), PathFindFileNameW(text));
+	PathRemoveExtensionW(displayName);
+
 	LVITEM lvItem = { 0 };
 	lvItem.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
 	lvItem.iItem = rowIndex;
 	lvItem.iSubItem = 0;
 	lvItem.iImage = rowIndex;
-	lvItem.pszText = (LPWSTR)PathFindFileName(text);
+	lvItem.pszText = displayName;
 	lvItem.lParam = (LPARAM)StrDup(text);
 
 	return ListView_InsertItem(hListView, &lvItem);
@@ -511,15 +1067,30 @@ LPWSTR CBackgroundDlgProc::GetWallpaperPath(HWND hListView, int iIndex)
 	ListView_GetItem(hListView, &item);
 	return (LPWSTR)item.lParam;
 }
+
+int CBackgroundDlgProc::FindItemByPath(LPCWSTR path)
+{
+	if (!path || !*path)
+	{
+		return -1;
+	}
+
+	for (int i = 0; i < ListView_GetItemCount(hListView); ++i)
+	{
+		LPCWSTR itemPath = GetWallpaperPath(hListView, i);
+		if (itemPath && StrCmpIW(itemPath, path) == 0)
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
 #pragma endregion
 
 void CBackgroundDlgProc::AddMissingWallpapers()
 {
-	LVFINDINFO findInfo = { 0 };
-	findInfo.flags = LVFI_STRING;
-	findInfo.psz = PathFindFileName(selectedTheme->wallpaperPath.c_str());
-	int inde = ListView_FindItem(hListView, -1, &findInfo);
-	if (inde == -1 && !selectedTheme->wallpaperPath.empty())
+	if (!selectedTheme->wallpaperPath.empty() && FindItemByPath(selectedTheme->wallpaperPath.c_str()) == -1)
 	{
 		if (PathFileExists(selectedTheme->wallpaperPath.c_str()))
 		{
@@ -535,10 +1106,11 @@ void CBackgroundDlgProc::SelectCurrentWallpaper()
 	int index = 0;
 	if (selectedTheme->wallpaperType != WT_NOWALL)
 	{
-		LVFINDINFO findInfo = { 0 };
-		findInfo.flags = LVFI_STRING;
-		findInfo.psz = PathFindFileName(selectedTheme->wallpaperPath.c_str());
-		index = ListView_FindItem(hListView, -1, &findInfo);
+		index = FindItemByPath(selectedTheme->wallpaperPath.c_str());
+		if (index == -1)
+		{
+			index = 0;
+		}
 	}
 
 	ListView_SetItemState(hListView, -1, 0, LVIS_SELECTED);
@@ -555,16 +1127,13 @@ void CBackgroundDlgProc::SelectCurrentWallpaper()
 		_beginthread(SlideshowWorkerThread, 0, data);
 	}
 
+	wallpaperApplyPending = false;
 	SetModified(FALSE);
 }
 
 void CBackgroundDlgProc::_UpdateButtonBmp()
 {
-	HBITMAP hBmp;
-	GetSolidBtnBmp(GetDeskopColor(), GetDpiForWindow(m_hWnd), GetClientSIZE(GetDlgItem(1207)), &hBmp);
-	HBITMAP hOld = Button_SetBitmap(GetDlgItem(1207), hBmp);
-	DeleteBitmap(hOld);
-	DeleteBitmap(hBmp);
+	::InvalidateRect(GetDlgItem(1207), nullptr, TRUE);
 }
 
 void CBackgroundDlgProc::_UpdatePreview(UINT uFlags)

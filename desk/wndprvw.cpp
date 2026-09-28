@@ -9,6 +9,7 @@
 #include "helper.h"
 #include "uxtheme.h"
 #include "wndprvw.h"
+#include "CaptionButtonRenderer.h"
 
 #ifndef _DEBUG
 #undef RETURN_IF_FAILED
@@ -84,7 +85,10 @@ CWindowPreview::~CWindowPreview()
 HRESULT CWindowPreview::GetPreviewImage(HBITMAP* pbOut)
 {
 	HRESULT hr = S_OK;
-	if (_fForceClassic) _fIsThemed = 0;
+	if (_fForceClassic || selectedTheme->szMsstylePath.compare(L"(classic)") == 0)
+		_fIsThemed = 0;
+	else
+		_fIsThemed = 1;
 
 	_hWndTheme = OpenNcThemeData(_hTheme, L"Window");
 	_hScrlTheme = OpenNcThemeData(_hTheme, L"Scrollbar");
@@ -596,7 +600,7 @@ HRESULT CWindowPreview::_CalculateWindowRects()
 	GetThemePartSize(_hWndTheme, NULL, WP_CLOSEBUTTON, CBS_NORMAL, NULL, TS_TRUE, &size);
 
 	int cyBtn = NcGetSystemMetrics(SM_CYSIZE);
-	int cxBtn = _fIsThemed ? MulDiv(cyBtn, size.cx, size.cy) : NcGetSystemMetrics(SM_CYSIZE);
+	int cxBtn = _fIsThemed ? MulDiv(cyBtn, size.cx, size.cy) : NcGetSystemMetrics(SM_CXSIZE);
 
 	// remove padding
 	cyBtn -= (cyEdge * 2);
@@ -859,19 +863,20 @@ HRESULT CWindowPreview::_RenderCaptionButtons(HDC hdc, MYWINDOWINFO wndInfo)
 {
 	HRESULT hr = S_OK;
 	CLOSEBUTTONSTATES btnState = wndInfo.wndType == WT_INACTIVE ? (CLOSEBUTTONSTATES)5 : CBS_NORMAL;
+	const COLORREF* previewColors = selectedTheme->selectedScheme ? selectedTheme->selectedScheme->rgb : nullptr;
 
 	_fIsThemed ? DrawThemeBackground(_hWndTheme, hdc, WP_CLOSEBUTTON, btnState, &_rcBounds[2], NULL)
-		: NcDrawFrameControl(hdc, &_rcBounds[2], DFC_CAPTION, 1) == TRUE ? S_OK : E_FAIL;
+		: DrawPreviewCaptionButton(hdc, _rcBounds[2], DFCS_CAPTIONCLOSE, previewColors) == TRUE ? S_OK : E_FAIL;
 
 	if (wndInfo.wndType != WT_MESSAGEBOX)
 	{
 		// max button
 		_fIsThemed ? DrawThemeBackground(_hWndTheme, hdc, WP_MAXBUTTON, btnState, &_rcBounds[3], NULL)
-			: NcDrawFrameControl(hdc, &_rcBounds[3], DFC_CAPTION, 2) == TRUE ? S_OK : E_FAIL;
+			: DrawPreviewCaptionButton(hdc, _rcBounds[3], DFCS_CAPTIONMAX, previewColors) == TRUE ? S_OK : E_FAIL;
 
 		// min button
 		_fIsThemed ? DrawThemeBackground(_hWndTheme, hdc, WP_MINBUTTON, btnState, &_rcBounds[4], NULL)
-			: NcDrawFrameControl(hdc, &_rcBounds[4], DFC_CAPTION, 3) == TRUE ? S_OK : E_FAIL;
+			: DrawPreviewCaptionButton(hdc, _rcBounds[4], DFCS_CAPTIONMIN, previewColors) == TRUE ? S_OK : E_FAIL;
 	}
 
 	return hr;
@@ -947,10 +952,15 @@ HRESULT CWindowPreview::_RenderScrollbar(Graphics* pGraphics, MYWINDOWINFO wndIn
 	if (wndInfo.wndType != WT_ACTIVE) return hr;
 
 	HDC hdc = pGraphics->GetHDC();
-	int height = _fIsThemed ? max(NcGetSystemMetrics(SM_CYVSCROLL), _sizeScrollbar.cy) : NcGetSystemMetrics(SM_CYVSCROLL);
 
 	// scroll bar background
-	RECT crc = _rcBounds[9];
+	const RECT scrollbarRect = _rcBounds[9];
+	// Classic scroll arrows are square. The separate height metric can be
+	// missing in a preview scheme, leaving only slivers for both buttons.
+	const int height = _fIsThemed
+		? max(NcGetSystemMetrics(SM_CYVSCROLL), _sizeScrollbar.cy)
+		: min(RECTWIDTH(scrollbarRect), RECTHEIGHT(scrollbarRect) / 2);
+	RECT crc = scrollbarRect;
 	if (_fIsThemed)
 	{
 		DrawThemeBackground(_hScrlTheme, hdc, SBP_LOWERTRACKVERT, SCRBS_NORMAL, &crc, 0);
@@ -964,18 +974,24 @@ HRESULT CWindowPreview::_RenderScrollbar(Graphics* pGraphics, MYWINDOWINFO wndIn
 
 	// up button
 	crc.bottom = crc.top + height;
-	_fIsThemed ? DrawThemeBackground(_hScrlTheme, hdc, SBP_ARROWBTN, ABS_UPNORMAL, &crc, 0)
-		: NcDrawFrameControl(hdc, &crc, DFC_SCROLL, 1) == TRUE ? S_OK : E_FAIL;
+	if (_fIsThemed)
+		DrawThemeBackground(_hScrlTheme, hdc, SBP_ARROWBTN, ABS_UPNORMAL, &crc, 0);
+	else
+		DrawPreviewFrameControl(hdc, crc, DFC_SCROLL, DFCS_SCROLLUP,
+			selectedTheme->selectedScheme ? selectedTheme->selectedScheme->rgb : nullptr);
 
 	// scroll thumb 
 	OffsetRect(&crc, 0, height);
 	if (_fIsThemed) DrawThemeBackground(_hScrlTheme, hdc, SBP_THUMBBTNVERT, SCRBS_NORMAL, &crc, 0);
 
 	// down button
-	crc = _rcBounds[9];
+	crc = scrollbarRect;
 	crc.top = crc.bottom - height;
-	_fIsThemed ? DrawThemeBackground(_hScrlTheme, hdc, SBP_ARROWBTN, ABS_DOWNNORMAL, &crc, 0)
-		: NcDrawFrameControl(hdc, &crc, DFC_SCROLL, 2) == TRUE ? S_OK : E_FAIL;
+	if (_fIsThemed)
+		DrawThemeBackground(_hScrlTheme, hdc, SBP_ARROWBTN, ABS_DOWNNORMAL, &crc, 0);
+	else
+		DrawPreviewFrameControl(hdc, crc, DFC_SCROLL, DFCS_SCROLLDOWN,
+			selectedTheme->selectedScheme ? selectedTheme->selectedScheme->rgb : nullptr);
 
 	pGraphics->ReleaseHDC(hdc);
 	return hr;
@@ -1224,8 +1240,9 @@ HRESULT CWindowPreview::_RenderMenuItem(HDC hdc, RECT* rc, int type)
 	RECT rcheight = { 0,0,0,0 };
 	DrawText(hdc, szText, -1, &rcheight, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_CALCRECT);
 
-	// 7 padding on either side of the text
-	rc->right = rc->left + RECTWIDTH(rcheight) + (7 * 2);
+	// Classic menu-bar items use compact horizontal padding.
+	int horizontalPadding = MulDiv(4, _dpiWindow, 96);
+	rc->right = rc->left + RECTWIDTH(rcheight) + (horizontalPadding * 2);
 	if (type == 3) DrawEdge(hdc, rc, BDR_SUNKENOUTER, BF_RECT);
 
 	if (type == 2 || type == 3)
@@ -1250,6 +1267,6 @@ HRESULT CWindowPreview::_RenderMenuItem(HDC hdc, RECT* rc, int type)
 	DeleteObject(fon);
 
 	// update the rectangle
-	rc->left += RECTWIDTH(rcheight) + (7 * 2) + 1;
+	rc->left += RECTWIDTH(rcheight) + (horizontalPadding * 2) + 1;
 	return S_OK;
 }

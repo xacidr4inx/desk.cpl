@@ -3,12 +3,28 @@
 
 
 class CDesktopIconsDlg :
-	public CPropertyPageImpl<CDesktopIconsDlg>
+	public ATL::CDialogImpl<CDesktopIconsDlg>
 {
 public:
-	enum { IDD = 29952 };
+	enum { IDD = IDD_DESKTOPICONSDLG };
+
+	bool myDocumentsVisible = false;
+	bool computerVisible = false;
+	bool networkVisible = false;
+	bool internetVisible = false;
+	WCHAR internetIconClass[64] = L"{871C5380-42A0-1069-A2EA-08002B30309D}";
+	bool useInitialVisibility = false;
+	bool initialVisibility[4] = {};
+
+	INT_PTR ShowModal(HWND owner);
+
+	~CDesktopIconsDlg()
+	{
+		if (hIconImages) ImageList_Destroy(hIconImages);
+	}
 
 private:
+	static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 	BEGIN_MSG_MAP(CDesktopIconsDlg)
 		MESSAGE_HANDLER(WM_INITDIALOG, OnInitDialog)
 		MSG_WM_CLOSE(OnClose)
@@ -21,10 +37,11 @@ private:
 	LRESULT OnCancel(UINT uNotifyCode, int nID, HWND hWnd, BOOL& bHandled);
 	void OnClose();
 
-	HWND hComputer;
-	HWND hUser;
-	HWND hNetwork;
-	HWND hRecycler;
-	HWND hCpanel;
+	HWND hComputer = nullptr;
+	HWND hUser = nullptr;
+	HWND hNetwork = nullptr;
+	HWND hInternet = nullptr;
+	HWND hIconList = nullptr;
+	HIMAGELIST hIconImages = nullptr;
 };
 

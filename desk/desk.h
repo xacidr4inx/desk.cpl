@@ -60,6 +60,7 @@ struct THEMEINFO
 	WALLPAPER_TYPE wallpaperType;
 	std::wstring wallpaperPath;
 	COLORREF newColor;
+	bool fCustomDesktopColorPending = false;
 	bool customWallpaperSelection = false;
 	int posChanged = -1;
 	bool useDesktopColor = false;
@@ -69,6 +70,8 @@ struct THEMEINFO
 
 	// reduce overhead every time u load appearancepage
 	std::wstring szMsstylePath;
+	// Retain Classic data from a browsed theme while its msstyle is active.
+	std::wstring classicSchemeSourcePath;
 	bool fMsstyleChanged = false;
 	bool fThemePgMsstyleUpdate = false;		// bruh
 	bool fSlideshowSelection;
@@ -111,3 +114,13 @@ extern PROCESS_INFORMATION pi;
 extern FONTINFO* fontInfo;
 
 extern BOOL themeSelected;
+extern volatile LONG g_currentSessionModified;
+extern volatile LONG g_themeSelectionInProgress;
+
+// Loads the theme and the matching color/metric scheme before any property
+// page is created.  The property pages use this shared state for previews.
+void InitializeCurrentThemeState();
+
+// Drop the saved-file identity after the active theme has been modified, so
+// the Themes page shows its Modified state instead of the source file name.
+void ForgetSavedThemePathForCurrentTheme();

@@ -6,6 +6,7 @@ class CThemeChngDlg :
 {
 public:
 	enum { IDD = IDD_THEMECHNGDLG };
+	enum Result { RevertChanges = 0, KeepChanges = 1 };
 
 private:
 	BEGIN_MSG_MAP(CThemeChngDlg)

@@ -117,9 +117,282 @@ STRINGTABLE DISCARDABLE
 BEGIN
     IDS_THEMESCPL           "Display"
     IDS_THEMESDESC          "Change the appearance of your desktop, such as the background, screen saver, colors, font sizes, and screen resolution."
+    IDS_DISPLAY_PROPERTIES  "Display Properties"
+    IDS_THEME_FILE_INVALID  "The file ""%s"" is not a valid theme."
+    IDS_THEME_FILE_UNAVAILABLE "The theme file is not available."
+    IDS_ERROR_LOADING_THEME "Error Loading Theme"
+    IDS_WINDOWS_XP_STYLE    "Windows XP style"
+    IDS_ZUNE                "Zune"
+    IDS_ROYALE              "Royale"
+    IDS_ROYALE_NOIR         "Royale Noir"
+    IDS_CUSTOM_CLASSIC      "Custom Classic"
+    IDS_THEME_FILE_LABEL    "Theme files (*.theme)"
+    IDS_SAVE_THEME_AS       "Save Theme As"
+    IDS_BROWSE              "Browse"
+    IDS_DESKTOP_ITEMS_OPEN_ERROR "The Desktop Items dialog could not be opened."
+    IDS_NOT_AVAILABLE       "Not available"
+    IDS_DEFAULT_REFRESH_RATE "Default refresh rate"
+    IDS_SETTINGS_GENERAL    "General"
+    IDS_SETTINGS_ADAPTER    "Adapter"
+    IDS_SETTINGS_MONITOR    "Monitor"
+    IDS_SETTINGS_TROUBLESHOOT "Troubleshoot"
+    IDS_DESKTOP_ICON_COMPUTER "My Computer"
+    IDS_DESKTOP_ICON_DOCUMENTS "My Documents"
+    IDS_DESKTOP_ICON_NETWORK "My Network Places"
+    IDS_DESKTOP_ICON_RECYCLE_FULL "Recycle Bin (full)"
+    IDS_DESKTOP_ICON_RECYCLE_EMPTY "Recycle Bin (empty)"
+    IDS_DESKTOP_ICON_INTERNET "Internet Explorer"
+    IDS_DESKTOP_ICON_CONTROL_PANEL "Control Panel"
+    IDS_THEME_SNAPSHOT_MISSING "The My Current Theme snapshot could not be found."
+    IDS_BROWSE_FOR_THEME   "Browse for a Theme"
+    IDS_THEME_ADD_TO_LIST_ERROR "The theme file could not be added to the list: %s"
+    IDS_CURRENT_THEME_FILE_MISSING "The current theme file could not be found."
+    IDS_DEFAULT_THEME_FILENAME "My Favorite Theme.theme"
+    IDS_DEFAULT_THEME_FILENAME_ERROR "The default theme filename could not be created in Documents."
+    IDS_THEME_COPY_ERROR    "The current theme could not be copied. (0x%08X)"
+    IDS_THEME_NAME_WRITE_ERROR "The theme file was created, but its name could not be written. (0x%08X)"
+    IDS_THEME_CLASSIC_SAVE_ERROR "The theme was created, but its Classic color scheme could not be saved. (0x%08X)"
+    IDS_THEME_STAGED_COPY_ERROR "The theme was saved, but its previous staged copy could not be replaced. (0x%08X)"
+    IDS_THEME_ADD_ERROR     "The theme was saved, but could not be added to the Themes list. (0x%08X)"
+    IDS_THEME_CLASSIC_APPLY_ERROR "The theme was saved, but its Classic color scheme could not be applied. (0x%08X)"
+    IDS_THEME_DELETE_ERROR  "The theme could not be deleted. (0x%08X)"
+    IDS_THEME_PREPARE_ERROR "The theme could not be prepared for applying. (0x%08X)"
+    IDS_THEME_APPLY_ERROR   "The selected theme could not be applied. (0x%08X)"
+    IDS_THEME_APPLIED_CLASSIC_ERROR "The theme was applied, but its Classic color scheme could not be applied. (0x%08X)"
+    IDS_CLASSIC_SCHEME_APPLY_ERROR "The selected Classic color scheme could not be applied. (0x%08X)"
+    IDS_STANDARD_SCHEME_APPLY_ERROR "The Windows Standard color scheme could not be applied. (0x%08X)"
+    IDS_ALL_FILES_LABEL     "All files (*.*)"
+    IDS_COLOR_SCHEME_SAVE_ERROR "The selected color scheme could not be saved. (0x%08X)"
+    IDS_COLOR_SCHEME_RETAIN_ERROR "The selected color scheme could not be retained. (0x%08X)"
+    IDS_VISUAL_STYLE_APPLY_ERROR "The selected visual style could not be applied. (0x%08X)"
+    IDS_CLASSIC_DERIVATIVE_SYNC_ERROR "The Classic scheme was applied, but its theme derivative could not be synchronized. (0x%08X)"
+    IDS_CLASSIC_DERIVATIVE_MISSING "The Classic scheme was applied, but its theme derivative could not be found."
+    IDS_CLASSIC_DERIVATIVE_SAVE_ERROR "The Classic scheme was applied, but its theme derivative could not be saved. (0x%08X)"
+    IDS_VISUAL_DERIVATIVE_SYNC_ERROR "The visual style was applied, but the modified theme could not be synchronized. (0x%08X)"
+    IDS_ICON_SIZE_SAVE_ERROR "The icon size setting could not be saved. (0x%08X)"
+    IDS_ICON_SIZE_UPDATE_ERROR "The preference was saved, but the desktop icon size could not be updated immediately. (0x%08X)"
+    IDS_WALLPAPER_DERIVATIVE_SYNC_ERROR "The wallpaper was applied, but the modified theme could not be synchronized. (0x%08X)"
+    IDS_DPI_READ_ERROR      "The Windows DPI setting could not be read at %s. (0x%08X)"
+    IDS_DPI_RESTART_NOTICE  "Any font changes resulting from a new DPI setting will take effect after the fonts are installed and Windows is restarted."
+    IDS_CHANGE_DPI_TITLE    "Change DPI Setting"
+    IDS_DPI_SAVE_ERROR      "The DPI setting could not be saved. (0x%08X)"
+    IDS_GRAPHICS_PROFILE_UNSUPPORTED "This Windows version or graphics adapter does not support the selected graphics profile."
+    IDS_GRAPHICS_TITLE      "Graphics Acceleration"
+    IDS_GPU_SCHEDULING_RESTART "The hardware GPU scheduling change has been saved. Restart Windows for it to take effect."
+    IDS_VRR_ENABLED         "Variable refresh rate successfully enabled."
+    IDS_VRR_DISABLED        "Variable refresh rate successfully disabled."
+    IDS_GRAPHICS_PROFILE_SAVE_ERROR "Windows could not save the graphics profile (error %lu)."
+    IDS_VRR_ENABLE_ERROR    "Failed to enable Variable refresh rate. (Error 0x%08X)"
+    IDS_VRR_DISABLE_ERROR   "Failed to disable Variable refresh rate. (Error 0x%08X)"
+    IDS_ADAPTER_PROPERTIES_ERROR "Windows could not open this display adapter's device properties."
+    IDS_ALL_MODES_OPEN_ERROR "Windows could not open the List All Modes dialog."
+    IDS_MONITOR_PROPERTIES_ERROR "Windows could not open this monitor's device properties."
+    IDS_MONITOR_CONFIG_READ_ERROR "Could not read the current monitor configuration."
+    IDS_MODE_FILTER_SAVE_ERROR "Could not save the display-mode filter (error %lu)."
+    IDS_REFRESH_RATE_APPLY_ERROR "Windows could not apply the screen refresh rate (error %ld)."
+    IDS_MONITOR_CONFIGURATION_CHANGED "The display configuration changed while this arrangement was being edited. The current configuration has been reloaded. Please arrange the monitors again."
+    IDS_EXTEND_MONITOR_FIRST "To apply resolution or color quality changes to this monitor, select the Extend my Windows desktop onto this monitor checkbox."
+    IDS_MONITOR_DEVICE_MISSING "Could not identify the Windows display device for this monitor."
+    IDS_MONITORS_SHARE_DEVICE "These monitors share a Windows display device and cannot be arranged independently."
+    IDS_SAVED_MONITOR_CONFIG_READ_ERROR "Could not read the saved configuration for this monitor."
+    IDS_CURRENT_DISPLAY_CONFIG_READ_ERROR "Could not read the current display configuration."
+    IDS_MONITOR_ARRANGEMENT_REJECTED "Windows rejected the monitor arrangement or resolution (error %ld)."
+    IDS_MONITOR_ARRANGEMENT_SAVE_ERROR "Windows could not save the monitor arrangement."
+    IDS_MONITOR_ARRANGEMENT_APPLY_ERROR "Windows could not apply the monitor arrangement."
+    IDS_MONITOR_ENABLE_PROMPT "The monitor you have selected is currently disabled. If you enable this monitor, then it will be used as part of your Windows desktop; you can move your mouse to it, place icons on it, and show program windows on it.\n\nDo you want to enable this monitor?"
+    IDS_ADVANCED_DISPLAY_TITLE_FORMAT "%s and %s Properties"
+    IDS_DISPLAY_MODE_FORMAT "%lu x %lu pixels, %lu Hertz"
+    IDS_HERTZ_FORMAT "%lu Hertz"
+    IDS_DISPLAY_MEMORY_PLACEHOLDER "128 MB"
+    IDS_DISPLAY_LIST_FORMAT "%d. %s on %s"
+    IDS_RESOLUTION_FORMAT "%d X %d pixels"
+    IDS_COLOR_DEPTH_4 "16 Colors"
+    IDS_COLOR_DEPTH_8 "256 Colors"
+    IDS_COLOR_DEPTH_16 "High Color (16 bit)"
+    IDS_COLOR_DEPTH_24 "True Color (24 bit)"
+    IDS_COLOR_DEPTH_32 "True Color (32 bit)"
+    IDS_COLOR_DEPTH_GENERIC_FORMAT "%u bit"
+    IDS_MODE_LINE_FORMAT "%u by %u, %s, %u Hertz"
+    IDS_MODE_LINE_DEFAULT_FORMAT "%u by %u, %s, Default refresh rate"
+    IDS_NO_VALID_MODES "No valid modes are available."
+    IDS_ALL_PICTURE_FILES_LABEL "All Picture Files (*.bmp;*.gif;*.jpg;*.jpeg;*.dib;*.png)"
+    IDS_DEFAULT_BLUE_STYLE "Default [blue]"
+    IDS_ZUNE_STYLE "Zune style"
+    IDS_ROYALE_STYLE "Royale style"
+    IDS_ROYALE_NOIR_STYLE "Royale Noir style"
+    IDS_EMBEDDED_STYLE "Embedded style"
+    IDS_GRAPHICS_SETTINGS_READ_ERROR "Windows graphics settings could not be read; no changes will be made."
+    IDS_DESKTOP_ITEMS_OPEN_ERROR_CODE "The Desktop Items dialog could not be opened. (error %Id)"
+    IDS_ADAPTER_MEMORY_FORMAT "%I64u MB"
 END
 
 #include "Resource.en-US.rc"
+
+// These dialog templates are part of the executable's primary resource image.
+// MUIBuild places resources declared only in Resource.en-US.rc in the satellite
+// resource, which makes them unavailable to FindResource from deskn.cpl.
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+// Port of the Windows 3790 ThemeUI compact palette popup template. Keep this
+// in the primary resource image because CreateDialogParam loads it by resource ID.
+IDD_THEMEUI_COLOR_PICKER DIALOGEX 0, 0, 62, 81
+STYLE 0x804000CC
+EXSTYLE 0
+FONT 8, "MS Shell Dlg", 0, 0, 1
+BEGIN
+    CONTROL         "",1205,"Static",0x5000000D,0,0,62,62
+    CONTROL         "",1208,"Static",0x50000010,1,62,61,1
+    PUSHBUTTON      "&Other...",1207,0,65,47,14,0x50010000
+    CONTROL         "",1206,"Static",0x5000000D,49,65,14,14
+END
+
+IDD_DESKTOPICONSDLG DIALOGEX 0, 0, 275, 190
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Desktop Items"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Desktop icons",-1,7,7,160,102
+    CONTROL         "My Documents",30077,"Button",BS_AUTOCHECKBOX | WS_CHILD | WS_VISIBLE | WS_TABSTOP,16,21,139,12
+    CONTROL         "My Computer",30078,"Button",BS_AUTOCHECKBOX | WS_CHILD | WS_VISIBLE | WS_TABSTOP,16,41,139,12
+    CONTROL         "My Network Places",30080,"Button",BS_AUTOCHECKBOX | WS_CHILD | WS_VISIBLE | WS_TABSTOP,16,61,139,12
+    CONTROL         "Internet Explorer",30081,"Button",BS_AUTOCHECKBOX | WS_CHILD | WS_VISIBLE | WS_TABSTOP,16,81,139,12
+    CONTROL         "",30082,"SysListView32",LVS_ICON | LVS_AUTOARRANGE | WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP,175,7,93,102
+    DEFPUSHBUTTON   "OK",IDOK,161,169,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,215,169,53,14
+END
+
+IDI_ADAPTER ICON "adapter.ico"
+IDI_MONITOR ICON "monitor.ico"
+
+IDD_ADVANCEDDLG DIALOGEX 0, 0, 300, 184
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Display Adapter Properties"
+FONT 8, "MS Sans Serif", 400, 0, 0x1
+BEGIN
+    CONTROL "General",1900,"SysTabControl32",WS_TABSTOP,7,7,286,22
+    GROUPBOX "Adapter information",1901,7,35,286,57
+    LTEXT "Display adapter:",1902,16,48,75,8
+    LTEXT "",1903,96,48,185,8
+    LTEXT "Display memory:",1904,16,64,75,8
+    LTEXT "System-managed",1905,96,64,185,8
+    LTEXT "Current display mode:",1906,16,80,75,8
+    LTEXT "",1907,96,80,185,8
+    GROUPBOX "Monitor",1908,7,98,286,42
+    LTEXT "Monitor:",1909,16,112,75,8
+    LTEXT "",1910,96,112,185,8
+    LTEXT "This dialog is provided by the desktop control panel.",1911,16,132,260,8
+    DEFPUSHBUTTON "OK",IDOK,187,162,50,14
+    PUSHBUTTON "Cancel",IDCANCEL,242,162,50,14
+END
+
+IDD_ADAPTERDLG DIALOGEX 20, 20, 252, 175
+STYLE DS_SETFONT | DS_CONTROL | DS_FIXEDSYS | WS_CHILD | WS_TABSTOP
+CAPTION "Adapter"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    GROUPBOX "Adapter Type",2010,7,3,237,50
+    ICON IDI_ADAPTER,2017,12,11,18,20
+    LTEXT "",2002,40,17,190,20
+    PUSHBUTTON "&Properties",2003,161,33,75,14
+    GROUPBOX "Adapter Information",2011,7,56,237,75
+    LTEXT "Chip Type:",2004,13,68,58,8
+    LTEXT "",2012,85,68,146,8
+    LTEXT "DAC Type:",2005,13,80,58,8
+    LTEXT "",2013,85,80,146,8
+    LTEXT "Memory Size:",2006,13,92,58,8
+    LTEXT "",2014,85,92,146,8
+    LTEXT "Adapter String:",2007,13,104,58,8
+    LTEXT "",2015,85,104,146,8
+    LTEXT "BIOS Information:",2008,13,116,58,8
+    LTEXT "",2016,85,116,146,8
+    PUSHBUTTON "List All Modes...",2009,7,192,75,14
+END
+
+IDD_MONITORDLG DIALOGEX 20, 20, 252, 175
+STYLE DS_SETFONT | DS_CONTROL | DS_FIXEDSYS | WS_CHILD | WS_TABSTOP
+CAPTION "Monitor"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    GROUPBOX "Monitor type",2020,7,3,237,52
+    ICON IDI_MONITOR,2029,13,12,18,20
+    LTEXT "",2022,40,17,190,20
+    PUSHBUTTON "&Properties",2023,161,35,75,14
+    GROUPBOX "Monitor settings",2024,7,58,237,96
+    LTEXT "Screen refresh rate:",2025,13,73,200,30
+    COMBOBOX 2026,13,85,215,200,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CHECKBOX "&Hide modes that this monitor cannot display",2027,13,106,180,10
+    LTEXT "",2028,13,118,222,33
+END
+
+IDD_GENERALDLG DIALOGEX 20, 20, 252, 214
+STYLE DS_SETFONT | DS_CONTROL | DS_FIXEDSYS | WS_CHILD | WS_TABSTOP
+CAPTION "General"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    GROUPBOX "Display",2030,7,9,237,84
+    LTEXT "If your screen resolution makes screen items too small to view comfortably, you can increase the DPI to compensate. To change font sizes only, click Cancel and go to the Appearance tab.",2036,13,20,220,24
+    LTEXT "DPI setting:",2037,13,50,70,8
+    COMBOBOX 2031,13,58,140,80,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Normal size (96 dpi)",2038,13,76,120,8
+    GROUPBOX "Compatibility",2032,7,98,237,108
+    LTEXT "Some programs might not operate properly unless you restart the computer after changing display settings.",2039,13,109,220,17
+    LTEXT "After I change display settings:",2049,13,132,180,8
+    AUTORADIOBUTTON "Restart the computer before applying the new display settings",2033,13,143,220,10
+    AUTORADIOBUTTON "Apply the new display settings without restarting",2034,13,156,220,10
+    AUTORADIOBUTTON "Ask me before applying the new display settings",2035,13,169,220,10
+    LTEXT "Some games and other programs must be run in 256-color mode.",2051,13,184,220,8
+    LTEXT "Learn more about running programs in 256-color mode.",2052,13,191,220,8
+END
+
+IDD_CUSTOMDPIDLG DIALOGEX 0, 0, 252, 152
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+EXSTYLE WS_EX_CONTEXTHELP
+CAPTION "Custom DPI Setting"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT "For a custom DPI setting, select a percentage from the list, or drag the ruler with your mouse.",IDC_CUSTOMDPIDESC,15,7,222,24
+    LTEXT "Scale to this percentage of normal size:",IDC_CUSTOMDPISCALELABEL,15,30,125,10
+    COMBOBOX IDC_CUSTOMDPIPERCENT,145,26,43,80,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL "",IDC_CUSTOMDPIRULER,"STATIC",SS_NOTIFY | WS_TABSTOP,15,45,215,36
+    LTEXT "10 point Arial at 96 pixels per inch.",IDC_CUSTOMDPISAMPLE,15,90,222,10
+    DEFPUSHBUTTON "OK",IDOK,141,138,45,14
+    PUSHBUTTON "Cancel",IDCANCEL,191,138,45,14
+END
+
+IDD_TROUBLESHOOTDLG DIALOGEX 20, 20, 252, 175
+STYLE DS_SETFONT | DS_CONTROL | DS_FIXEDSYS | WS_CHILD | WS_TABSTOP
+CAPTION "Troubleshoot"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    ICON IDI_MONITOR,2050,13,7,18,20
+    LTEXT "Are you having problems with your graphics hardware? These settings can help you troubleshoot display-related problems.",2043,40,8,200,25
+    GROUPBOX "Hardware acceleration",2040,7,45,237,112
+    LTEXT "Manually control the level of acceleration and performance supplied by your graphics hardware. Use the Display Troubleshooter to assist you in making the change.",2047,13,57,220,28
+    LTEXT "Hardware acceleration:",2044,13,91,100,8
+    LTEXT "None",2045,113,91,30,8
+    CONTROL "",2041,"msctls_trackbar32",TBS_AUTOTICKS | WS_TABSTOP,145,87,75,22
+    LTEXT "Full",2046,223,91,30,8
+    LTEXT "",2048,13,118,220,24
+    CTEXT "",2049,135,109,95,8
+    CHECKBOX "Enable write combining",2042,13,144,150,10
+END
+
+// The Appearance page is compiled into the main CPL, not the MUI.
+IDD_APPEARANCEDLG DIALOGEX 0, 0, 252, 218
+STYLE DS_SETFONT | DS_MODALFRAME | DS_NOIDLEMSG | DS_FIXEDSYS | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Appearance"
+FONT 8, "MS Sans Serif", 400, 0, 0x1
+BEGIN
+    CONTROL         "", 1110, "Static", SS_BITMAP | SS_CENTERIMAGE, 9, 7, 236, 116, WS_EX_CLIENTEDGE
+    LTEXT           "&Windows and buttons:",1112,7,131,100,9
+    COMBOBOX        1111,7,141,131,200,CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Color scheme:",1113,7,159,100,9
+    COMBOBOX        1114,7,169,131,200,CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Font size:",1115,7,188,100,9
+    COMBOBOX        1116,7,198,131,200,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Effects...",1118,190,180,55,14
+    PUSHBUTTON      "A&dvanced",1117,190,198,55,14
+END
 
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////

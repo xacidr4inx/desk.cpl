@@ -18,20 +18,30 @@ extern "C" NTSTATUS NTAPI NtOpenSection(
 
 
 void _TerminateProcess(PROCESS_INFORMATION& hp);
+// Use the current system message font for applet chrome; preview rendering
+// continues to use the selected theme's own font metrics.
+void ApplySystemDialogFont(HWND hwnd);
+std::wstring LoadDeskString(UINT id);
 COLORREF GetDeskopColor();
 void EnumDir(LPCWSTR directory, LPCWSTR* extensions, int cExtensions, std::vector<LPWSTR>& vec, BOOL fEnumChildDirs);
 void FreeBitmap(Gdiplus::Bitmap** bmp);
 HRESULT DrawBitmapIfNotNull(Gdiplus::Bitmap* bmp, Gdiplus::Graphics* graph, Gdiplus::Rect rect);
 HTHEME OpenNcThemeData(LPVOID file, LPCWSTR pszClassList);
 BOOL IsClassicThemeEnabled();
+bool IsWindowsClassicThemeName(LPCWSTR name);
 char* trim(char* s);
 wchar_t* strCut(wchar_t* s, const wchar_t* pattern);
 void ScaleLogFont(LOGFONT& lf, int dpi);
 void ScaleNonClientMetrics(NONCLIENTMETRICS& ncm, int dpi);
 void ScaleNonClientMetrics(NONCLIENTMETRICSW_2k& ncm, int dpi);
+bool ApplySchemeMetrics(const SCHEMEDATA* scheme, int dpi);
 HRESULT GetSolidBtnBmp(COLORREF clr, int dpi, SIZE size, HBITMAP* pbOut);
-BOOL ColorPicker(COLORREF clr, HWND hWnd, CHOOSECOLOR* clrOut);
+BOOL ColorPicker(COLORREF clr, HWND hWnd, CHOOSECOLOR* clrOut, BOOL fullOpen = TRUE);
 void CreateBlankScheme();
+SCHEMEDATA* LoadCurrentClassicSchemeFromRegistry();
+SCHEMEDATA* LoadWindowsStandardClassicScheme();
+bool LoadClassicSchemeFromThemeFile(LPCWSTR path, SCHEMEDATA& scheme);
+LSTATUS WriteClassicSchemeToThemeFile(LPCWSTR path, const SCHEMEDATA* scheme);
 void CreateThemedMetricsScheme(int dpi, void* pTheme);
 void SetBitmap(HWND hWnd, HBITMAP hBmp);
 void UpdateCustomTheme();

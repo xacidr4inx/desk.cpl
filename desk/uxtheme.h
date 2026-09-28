@@ -169,4 +169,6 @@ extern EnumThemes_t EnumThemes;
 extern SetSystemVisualStyle_t SetSystemVisualStyle;
 
 void InitUxtheme();
-HANDLE LoadThemeFromFilePath(PCWSTR szThemeFileName);
+HANDLE LoadThemeFromFilePath(PCWSTR szThemeFileName,
+	PCWSTR colorName = nullptr, PCWSTR sizeName = nullptr);
+void CleanupThemeFile(HANDLE* hThemeFile);

@@ -31,7 +31,7 @@ void InitUxtheme()
 }
 
 
-HANDLE LoadThemeFromFilePath(PCWSTR szThemeFileName)
+HANDLE LoadThemeFromFilePath(PCWSTR szThemeFileName, PCWSTR colorName, PCWSTR sizeName)
 {
 	if (!PathFileExists(szThemeFileName)) return nullptr;
 
@@ -39,16 +39,25 @@ HANDLE LoadThemeFromFilePath(PCWSTR szThemeFileName)
 	WCHAR defSize[MAX_PATH];
 
 	HRESULT hr = GetThemeDefaults(szThemeFileName, defColor, ARRAYSIZE(defColor), defSize, ARRAYSIZE(defSize));
+	if (FAILED(hr)) return nullptr;
+	if (!colorName || !colorName[0]) colorName = defColor;
+	if (!sizeName || !sizeName[0]) sizeName = defSize;
 
-	HANDLE hSharableSection;
-	HANDLE hNonsharableSection;
+	HANDLE hSharableSection = nullptr;
+	HANDLE hNonsharableSection = nullptr;
 	if (g_osVersion.BuildNumber() < 20000)
 	{
-		hr = LoaderLoadTheme(NULL, NULL, szThemeFileName, defColor, defSize, &hSharableSection, NULL, 0, &hNonsharableSection, NULL, 0, NULL, NULL, NULL, NULL, FALSE);
+		hr = LoaderLoadTheme(NULL, NULL, szThemeFileName, colorName, sizeName, &hSharableSection, NULL, 0, &hNonsharableSection, NULL, 0, NULL, NULL, NULL, NULL, FALSE);
 	}
 	else
 	{
-		hr = ((LoaderLoadTheme_t_win11)LoaderLoadTheme)(NULL, NULL, szThemeFileName, defColor, defSize, &hSharableSection, NULL, 0, &hNonsharableSection, NULL, 0, NULL, NULL, NULL, NULL);
+		hr = ((LoaderLoadTheme_t_win11)LoaderLoadTheme)(NULL, NULL, szThemeFileName, colorName, sizeName, &hSharableSection, NULL, 0, &hNonsharableSection, NULL, 0, NULL, NULL, NULL, NULL);
+	}
+	if (FAILED(hr))
+	{
+		if ((hSharableSection || hNonsharableSection) && ClearTheme)
+			ClearTheme(hSharableSection, hNonsharableSection, FALSE);
+		return nullptr;
 	}
 
 	HANDLE _hLocalTheme = malloc(sizeof(UXTHEMEFILE));
@@ -62,10 +71,30 @@ HANDLE LoadThemeFromFilePath(PCWSTR szThemeFileName)
 		ltf->_hSharableSection = hSharableSection;
 		ltf->_pbNonSharableData = MapViewOfFile(hNonsharableSection, FILE_MAP_READ, 0, 0, 0);
 		ltf->_hNonSharableSection = hNonsharableSection;
+		if (!ltf->_pbSharableData || !ltf->_pbNonSharableData)
+		{
+			if (ltf->_pbSharableData) UnmapViewOfFile(ltf->_pbSharableData);
+			if (ltf->_pbNonSharableData) UnmapViewOfFile(ltf->_pbNonSharableData);
+			if (ClearTheme) ClearTheme(hSharableSection, hNonsharableSection, FALSE);
+			free(ltf);
+			return nullptr;
+		}
 	}
 	else
 	{
 		hr = E_FAIL;
 	}
 	return _hLocalTheme;
+}
+
+void CleanupThemeFile(HANDLE* hThemeFile)
+{
+	if (!hThemeFile || !*hThemeFile) return;
+	UXTHEMEFILE* themeFile = (UXTHEMEFILE*)*hThemeFile;
+	if (themeFile->_pbSharableData) UnmapViewOfFile(themeFile->_pbSharableData);
+	if (themeFile->_pbNonSharableData) UnmapViewOfFile(themeFile->_pbNonSharableData);
+	if (ClearTheme)
+		ClearTheme(themeFile->_hSharableSection, themeFile->_hNonSharableSection, FALSE);
+	free(*hThemeFile);
+	*hThemeFile = nullptr;
 }

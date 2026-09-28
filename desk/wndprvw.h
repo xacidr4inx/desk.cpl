@@ -69,6 +69,7 @@ public:
 
 	//~ Begin IWindowPreview interface
 	STDMETHODIMP GetPreviewImage(HBITMAP* pbOut);
+	// Takes ownership of hTheme when non-null; the caller must not free it afterwards.
 	STDMETHODIMP GetUpdatedPreviewImage(MYWINDOWINFO* pwndInfo, LPVOID hTheme, HBITMAP* pbOut, UINT flags);
 	//~ End IWindowPreview interface
 

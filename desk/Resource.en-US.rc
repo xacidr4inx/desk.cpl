@@ -34,7 +34,7 @@ BEGIN
     LTEXT           "&Position:",1204,196,148,36,9
     COMBOBOX        1205,195,158,50,54,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "&Color:",1206,196,177,36,9
-    CONTROL         "",1207,"Button", BS_BITMAP | BS_PUSHBUTTON | WS_TABSTOP, 195, 187, 50, 13
+    CONTROL         "",1207,"Button", BS_OWNERDRAW | WS_TABSTOP, 195, 187, 50, 13
     PUSHBUTTON      "Customize &Desktop...",1208,7,200,88,15
 END
 
@@ -64,7 +64,7 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_NOIDLEMSG | DS_FIXEDSYS | WS_POPUP | WS_VI
 CAPTION "Appearance"
 FONT 8, "MS Sans Serif", 400, 0, 0x1
 BEGIN
-    CONTROL         "", 1110, "Static", SS_BITMAP | SS_CENTERIMAGE, 7, 5, 238, 120
+    CONTROL         "", 1110, "Static", SS_BITMAP | SS_CENTERIMAGE, 9, 7, 236, 116, WS_EX_CLIENTEDGE
     LTEXT           "&Windows and buttons:",1112,7,131,100,9
     COMBOBOX        1111,7,141,131,200,CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP
     LTEXT           "&Color scheme:",1113,7,159,100,9
@@ -94,8 +94,8 @@ BEGIN
     GROUPBOX        "&Color quality",1817,129,128,116,43
     COMBOBOX        1807,135,139,103,80,CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
     CONTROL         "",1813,"Static",SS_BITMAP | SS_CENTERIMAGE | SS_SUNKEN,135,156,103,9
-    CHECKBOX        "&Use this device as the primary monitor.",1806,7,172,180,10
-    CHECKBOX        "&Extend my Windows desktop onto this monitor.",1805,7,183,180,10
+    CONTROL         "&Use this device as the primary monitor.",1806,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,172,180,10
+    CONTROL         "&Extend my Windows desktop onto this monitor.",1805,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,183,180,10
     PUSHBUTTON      "&Identify",1822,68,200,56,14
     PUSHBUTTON      "&Troubleshoot...",1821,126,200,59,14
     PUSHBUTTON      "Ad&vanced",1802,189,200,56,14
@@ -114,15 +114,15 @@ BEGIN
     CONTROL "", 1128, EDIT, ES_RIGHT | WS_CHILD | WS_VISIBLE | WS_BORDER | WS_GROUP | WS_TABSTOP, 142, 169, 38, 13
     CONTROL "", 1133, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE | WS_BORDER | WS_GROUP, 172, 169, 10, 13
     CONTROL "Co&lor 1:", 1134, STATIC, SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 184, 159, 28, 9
-    CONTROL "", 1135, BUTTON, BS_BITMAP | BS_PUSHBUTTON | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 184, 169, 28, 13
+    CONTROL "", 1135, BUTTON, BS_OWNERDRAW | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 184, 169, 28, 13
     CONTROL "Color &2:", 1140, STATIC, SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 216, 159, 28, 9
-    CONTROL "", 1141, BUTTON, BS_BITMAP | BS_PUSHBUTTON | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 216, 169, 28, 13
+    CONTROL "", 1141, BUTTON, BS_OWNERDRAW | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 216, 169, 28, 13
     CONTROL "&Font:", 1137, STATIC, SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 7, 188, 20, 9
     CONTROL "", 1129, COMBOBOX, CBS_DROPDOWN | CBS_SORT | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP, 7, 198, 131, 200
     CONTROL "Siz&e:", 1139, STATIC, SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 142, 188, 17, 8
     CONTROL "", 1130, COMBOBOX, CBS_DROPDOWN | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP, 142, 198, 38, 200
     CONTROL "Colo&r:", 1138, STATIC, SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 184, 188, 20, 9
-    CONTROL "", 1136, BUTTON, BS_BITMAP | BS_PUSHBUTTON | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 184, 198, 28, 13
+    CONTROL "", 1136, BUTTON, BS_OWNERDRAW | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 184, 198, 28, 13
     CONTROL "B", 1131, BUTTON, BS_CHECKBOX | BS_PUSHLIKE | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 216, 198, 14, 13
     CONTROL "I", 1132, BUTTON, BS_CHECKBOX | BS_PUSHLIKE | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 230, 198, 14, 13
     CONTROL "OK", IDOK, BUTTON, BS_DEFPUSHBUTTON | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 141, 219, 50, 14
@@ -238,6 +238,9 @@ BEGIN
   2670, 	"Arial"
   2671, 	"10 point %s at %d pixels per inch."
   2672, 	"To set custom font size, drag ruler."
+  IDS_ACCEL_NONE, 	"Disable all accelerations. Use this setting only if your computer frequently stops responding or has other severe problems."
+  IDS_ACCEL_REDUCED, 	"Disable all but basic accelerations. Use this setting to correct more severe problems."
+  IDS_ACCEL_FULL, 	"All accelerations are enabled. Use this setting if your computer has no problems. (Recommended)"
   2750, 	"%SystemRoot%\\media\\ding.wav"
   2751, 	"%SystemRoot%\\media\\notify.wav"
   2752, 	"chord.wav"

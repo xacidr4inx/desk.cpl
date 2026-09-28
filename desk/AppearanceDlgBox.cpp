@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "AppearanceDlgBox.h"
+#include "ColorPalette.h"
 #include "cscheme.h"
 #include "helper.h"
 using namespace Microsoft::WRL::Details;
@@ -73,13 +74,14 @@ void CAppearanceDlgBox::OnPreviewClick(POINT pt)
 	SCHEMEINFO* tinfo = (SCHEMEINFO*)ComboBox_GetItemData(hElementCombobox, index);
 
 	_UpdateControls(tinfo);
-	_UpdateBitmaps(tinfo);
+	_RedrawColorButtons();
 	_UpdateSizeItem(tinfo);
 	_UpdateFont(tinfo);
 }
 
 BOOL CAppearanceDlgBox::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
+	ApplySystemDialogFont(m_hWnd);
 	hElementCombobox = GetDlgItem(1126);
 	hSizeUpdown = GetDlgItem(1133);
 	hColor1 = GetDlgItem(1135);
@@ -87,6 +89,9 @@ BOOL CAppearanceDlgBox::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BO
 	hFontCmb = GetDlgItem(1129);
 	hFontSize = GetDlgItem(1130);
 	hFontColor = GetDlgItem(1136);
+	hColor1 = InitializeThemeUiColorButton(hColor1);
+	hColor2 = InitializeThemeUiColorButton(hColor2);
+	hFontColor = InitializeThemeUiColorButton(hFontColor);
 	hBold = GetDlgItem(1131);
 	hItalic = GetDlgItem(1132);
 	hPreview = GetDlgItem(1470);
@@ -108,7 +113,7 @@ BOOL CAppearanceDlgBox::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BO
 			{
 				ComboBox_SetCurSel(hElementCombobox, index);
 				_UpdateControls(&info[i-1]);
-				_UpdateBitmaps(&info[i-1]);
+				_RedrawColorButtons();
 				_UpdateSizeItem(&info[i-1]);
 			}
 		}
@@ -151,7 +156,7 @@ BOOL CAppearanceDlgBox::OnComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& bH
 	SCHEMEINFO* tinfo = (SCHEMEINFO*)ComboBox_GetItemData(hElementCombobox, index);
 
 	_UpdateControls(tinfo);
-	_UpdateBitmaps(tinfo);
+	_RedrawColorButtons();
 	_UpdateSizeItem(tinfo);
 	_UpdateFont(tinfo);
 
@@ -160,26 +165,67 @@ BOOL CAppearanceDlgBox::OnComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& bH
 
 BOOL CAppearanceDlgBox::OnColorPick(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
-	int index = ComboBox_GetCurSel(hElementCombobox);
-	SCHEMEINFO* tinfo = (SCHEMEINFO*)ComboBox_GetItemData(hElementCombobox, index);
+	// Let the button finish its click and release capture before showing the popup.
+	::PostMessageW(m_hWnd, WM_OPEN_COLOR_PALETTE, id, reinterpret_cast<LPARAM>(hWnd));
+	return 0;
+}
 
-	COLORREF clr{};
-	if (id == 1135) clr = NcGetSysColor(tinfo->color1Target);
-	if (id == 1136) clr = NcGetSysColor(tinfo->fontColorTarget);
-	if (id == 1141) clr = NcGetSysColor(tinfo->color2Target);
-
-	CHOOSECOLOR cc = { 0 };
-	if (ColorPicker(clr, hWnd, &cc) == TRUE)
+LRESULT CAppearanceDlgBox::OnDrawItem(UINT, WPARAM, LPARAM lParam, BOOL& bHandled)
+{
+	auto* drawItem = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+	if (!drawItem || drawItem->CtlType != ODT_BUTTON)
 	{
-		_UpdateColorButton(hWnd, true, cc.rgbResult);
-		
-		WORD target;
-		if (id == 1135) target = tinfo->color1Target;
-		if (id == 1136) target = tinfo->fontColorTarget;
-		if (id == 1141) target = tinfo->color2Target;
-		selectedTheme->selectedScheme->rgb[target] = cc.rgbResult;
-		if (id == 1135 && tinfo->color1Target == COLOR_DESKTOP) selectedTheme->newColor = cc.rgbResult;
+		bHandled = FALSE;
+		return 0;
+	}
+	WORD target = 0;
+	if (!_GetColorTarget(drawItem->CtlID, target))
+	{
+		bHandled = FALSE;
+		return 0;
+	}
+	COLORREF color = target == COLOR_DESKTOP ? GetDeskopColor() : NcGetSysColor(target);
+	DrawThemeUiColorButton(*drawItem, color);
+	return TRUE;
+}
 
+bool CAppearanceDlgBox::_GetColorTarget(UINT controlId, WORD& target)
+{
+	if (controlId != 1135 && controlId != 1136 && controlId != 1141)
+		return false;
+	if (!hElementCombobox || !::IsWindow(hElementCombobox))
+		return false;
+	int index = ComboBox_GetCurSel(hElementCombobox);
+	if (index == CB_ERR)
+		return false;
+	LRESULT itemData = ComboBox_GetItemData(hElementCombobox, index);
+	if (itemData == CB_ERR)
+		return false;
+	auto* info = reinterpret_cast<SCHEMEINFO*>(itemData);
+	if (controlId == 1135) target = info->color1Target;
+	else if (controlId == 1136) target = info->fontColorTarget;
+	else target = info->color2Target;
+	return true;
+}
+
+LRESULT CAppearanceDlgBox::OnOpenColorPalette(UINT, WPARAM wParam, LPARAM lParam, BOOL&)
+{
+	UINT id = static_cast<UINT>(wParam);
+	HWND hWnd = reinterpret_cast<HWND>(lParam);
+	WORD target = 0;
+	if (!::IsWindow(hWnd) || !_GetColorTarget(id, target))
+		return 0;
+
+	COLORREF color = target == COLOR_DESKTOP ? GetDeskopColor() : NcGetSysColor(target);
+	if (PickThemeUiColor(hWnd, color, color))
+	{
+		selectedTheme->selectedScheme->rgb[target] = color;
+		if (id == 1135 && target == COLOR_DESKTOP)
+		{
+			selectedTheme->newColor = color;
+			selectedTheme->fCustomDesktopColorPending = true;
+		}
+		::InvalidateRect(hWnd, nullptr, TRUE);
 		_UpdatePreview(TRUE);
 	}
 	return 0;
@@ -318,29 +364,11 @@ void CAppearanceDlgBox::_UpdateControls(SCHEMEINFO* info)
 	::EnableWindow(hItalic, info->activeButton & ACTIVE_FONT);
 }
 
-void CAppearanceDlgBox::_UpdateBitmaps(SCHEMEINFO* info)
+void CAppearanceDlgBox::_RedrawColorButtons()
 {
-	_UpdateColorButton(hColor1, info->activeButton & ACTIVE_COLOR1, NcGetSysColor(info->color1Target));
-	// HACKHACK
-	if (info->color1Target == COLOR_BACKGROUND)
-	{
-		_UpdateColorButton(hColor1, info->activeButton & ACTIVE_COLOR1, GetDeskopColor());
-	}
-	_UpdateColorButton(hColor2, info->activeButton & ACTIVE_COLOR2, NcGetSysColor(info->color2Target));
-	_UpdateColorButton(hFontColor, info->activeButton & ACTIVE_FONTCOLOR, NcGetSysColor(info->fontColorTarget));
-}
-
-void CAppearanceDlgBox::_UpdateColorButton(HWND hButton, bool isActive, COLORREF color)
-{
-	HBITMAP bmp = NULL;
-	if (isActive)
-	{
-		GetSolidBtnBmp(color, GetDpiForWindow(m_hWnd), GetClientSIZE(hButton), &bmp);
-	}
-
-	HBITMAP hOld = Button_SetBitmap(hButton, bmp);
-	DeleteBitmap(hOld);
-	DeleteBitmap(bmp);
+	::InvalidateRect(hColor1, nullptr, TRUE);
+	::InvalidateRect(hColor2, nullptr, TRUE);
+	::InvalidateRect(hFontColor, nullptr, TRUE);
 }
 
 void CAppearanceDlgBox::_UpdateSizeItem(SCHEMEINFO* info)

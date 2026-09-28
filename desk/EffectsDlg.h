@@ -26,6 +26,7 @@ private:
 		COMMAND_HANDLER(1182, CBN_SELCHANGE, OnAnimCmbChange)
 		COMMAND_HANDLER(1184, CBN_SELCHANGE, OnFontCmbChange)
 		COMMAND_HANDLER(1185, BN_CLICKED, OnShadowChk)
+		COMMAND_HANDLER(1180, BN_CLICKED, OnLargeIconsChk)
 		COMMAND_HANDLER(1179, BN_CLICKED, OnWindowChk)
 		COMMAND_HANDLER(1181, BN_CLICKED, OnAltChk)
 
@@ -40,6 +41,7 @@ private:
 	BOOL OnFontChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnFontCmbChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnShadowChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
+	BOOL OnLargeIconsChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnWindowChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnAltChk(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 
@@ -53,17 +55,19 @@ private:
 	HWND _chkFont;
 	HWND _cmbFont;
 	HWND _chkShadow;
+	HWND _chkLargeIcons;
 	HWND _chkDragWnd;
 	HWND _chkAltIndicator;
 
 	BOOL _fSmoothingEnabled;
 	UINT _iSmoothingType;
 	BOOL _fDropShadows;
+	BOOL _fLargeIcons;
 	BOOL _fDragWindow;
 	BOOL _fAltIndicator;
 	UINT _iAnimEnabled;			// 0- disabled, 1- both enabled, 2- either enabled
 	BOOL _fAnimType;			// 0- fade, 1-scroll
 
-	EF_UPDATEFLAGS flags;
+	EF_UPDATEFLAGS flags = static_cast<EF_UPDATEFLAGS>(0);
 };
 

@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "desk.h"
 #include "wndprvw.h"
 
 #define READ_AT(TYPE, BIN, OFFSET) (*reinterpret_cast<TYPE*>((BIN) + (OFFSET)))
@@ -10,11 +11,13 @@ class CAppearanceDlgProc
 {
 public:
 	enum {IDD = IDD_APPEARANCEDLG};
+	enum { CLASSIC_PALETTE_REFRESH_TIMER = 0xA531 };
 
 private:
 	BEGIN_MSG_MAP(CAppearanceDlgProc)
 		MESSAGE_HANDLER(WM_INITDIALOG, OnInitDialog)
 		MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
+		MESSAGE_HANDLER(WM_TIMER, OnTimer)
 		COMMAND_HANDLER(1111, CBN_SELCHANGE, OnComboboxChange)
 		COMMAND_HANDLER(1114, CBN_SELCHANGE, OnClrComboboxChange)
 		COMMAND_HANDLER(1116, CBN_SELCHANGE, OnFontComboboxChange)
@@ -25,6 +28,7 @@ private:
 
 	BOOL OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
 	BOOL OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+	LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
 	BOOL OnAdvanced(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnEffects(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
 	BOOL OnComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
@@ -49,7 +53,17 @@ private:
 	std::vector<LPWSTR> msstyle;
 	Microsoft::WRL::ComPtr<IWindowPreview> pWndPreview;
 	SCHEMEDATA* schemeMap = NULL;
+	SCHEMEDATA* currentRegistryScheme = NULL;
+	SCHEMEDATA advancedSchemeBaseline = {};
+	SCHEMEDATA pendingClassicPalette = {};
 	ULONG mapSize;
+	bool appearanceApplyPending = false;
+	bool advancedAppearancePending = false;
+	bool advancedSchemeBaselineValid = false;
+	bool classicPaletteRefreshPending = false;
+	bool pendingClassicPaletteValid = false;
+	bool classicStyleWasActive = false;
+	int classicPaletteRefreshAttempts = 0;
 
 	// -ve sizes are fixed with preview size in wndprvw
 	MYWINDOWINFO wnd[3] =
@@ -60,11 +74,11 @@ private:
 		},
 		{
 			WT_ACTIVE,
-			{20, 35, -30, 35 + 134}
+			{20, 32, -30, 32 + 134}
 		},
 		{
 			WT_MESSAGEBOX,
-			{-75, 64, 75, 64 + 98}
+			{-75, 61, 75, 61 + 98}
 		}
 	};
 

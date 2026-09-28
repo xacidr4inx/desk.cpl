@@ -9,6 +9,7 @@ LRESULT CALLBACK StaticProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 BOOL CScrSaverDlgProc::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
+	ApplySystemDialogFont(m_hWnd);
 	hScrPreview = GetDlgItem(1302);
 	hEnergy = GetDlgItem(1305);
 	hScrCombo = GetDlgItem(1300);
