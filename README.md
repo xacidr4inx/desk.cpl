@@ -1,21 +1,21 @@
-# desk.cpl
+# desk.cpl slop ver
 The classic themes applet from Windows XP.
 
 ## To-do
 - [x] Themes page
-    - [ ] "Save As" and "Delete" buttons
-    - [ ] Loading custom `.theme` files (browse)
+    - [x] "Save As" and "Delete" buttons
+    - [x] Loading custom `.theme` files (browse)
 - [x] Desktop page
     - [x] Render wallpaper position in the preview
     - [x] "Customize Desktop" (recreate ?)
 - [x] Screen Saver page
 - [x] Appearance page
-    - [ ] Save custom schemes (?)
+    - [x] Save custom schemes (?)
     - [x] Effects dialog
         - [ ] Detect large icons
     - [x] Advanced dialog
         - [ ] Detect clicks on the preview, and select item accordingly
-- [ ] Settings page
+- [x] Settings page
     - [ ] Implement preview
 
 ## Images
