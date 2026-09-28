@@ -12,11 +12,11 @@ The classic themes applet from Windows XP.
 - [x] Appearance page
     - [x] Save custom schemes (?)
     - [x] Effects dialog
-        - [ ] Detect large icons
+        - [x] Detect large icons
     - [x] Advanced dialog
-        - [ ] Detect clicks on the preview, and select item accordingly
+        - [x] Detect clicks on the preview, and select item accordingly
 - [x] Settings page
-    - [ ] Implement preview
+    - [x] Implement preview
 
 ## Images
 
