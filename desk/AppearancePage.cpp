@@ -55,6 +55,34 @@ static bool ClassicMetricsMatch(const SCHEMEDATA* first, const SCHEMEDATA* secon
 		first->iPaddedBorderWidth == second->iPaddedBorderWidth;
 }
 
+// The Windows Standard registry value can have a localized name or slightly
+// different colors. Rank the normal-size schemes by their COLORREF bytes, not
+// by a translated display name.
+static ULONGLONG WindowsStandardPaletteDistance(const SCHEMEDATA* scheme)
+{
+	static constexpr COLORREF standardColors[MAX_COLORS] = {
+		0x00C8D0D4, 0x00A56E3A, 0x006A240A, 0x00808080,
+		0x00C8D0D4, 0x00FFFFFF, 0x00000000, 0x00000000,
+		0x00000000, 0x00FFFFFF, 0x00C8D0D4, 0x00C8D0D4,
+		0x00808080, 0x006A240A, 0x00FFFFFF, 0x00C8D0D4,
+		0x00808080, 0x00808080, 0x00000000, 0x00C8D0D4,
+		0x00FFFFFF, 0x00404040, 0x00C8D0D4, 0x00000000,
+		0x00E1FFFF, 0x00B5B5B5, 0x00800000, 0x00F0CAA6,
+	};
+	if (!scheme) return static_cast<ULONGLONG>(-1);
+	ULONGLONG distance = 0;
+	for (int color = 0; color < MAX_COLORS; ++color)
+	{
+		const COLORREF actual = scheme->rgb[color] & 0x00FFFFFF;
+		const COLORREF expected = standardColors[color];
+		const int red = static_cast<int>(GetRValue(actual)) - GetRValue(expected);
+		const int green = static_cast<int>(GetGValue(actual)) - GetGValue(expected);
+		const int blue = static_cast<int>(GetBValue(actual)) - GetBValue(expected);
+		distance += static_cast<ULONGLONG>(red * red + green * green + blue * blue);
+	}
+	return distance;
+}
+
 static bool HasClassicParentName(const SCHEMEDATA* scheme)
 {
 	return scheme && scheme->name[0] &&
@@ -295,14 +323,6 @@ static HRESULT ApplyClassicThemeWithoutChangingWallpaper(HWND hwnd)
 	if (!pThemeManager)
 		return E_UNEXPECTED;
 
-	WCHAR classicThemeName[128] = {};
-	StringCchCopyW(classicThemeName, ARRAYSIZE(classicThemeName),
-		LoadDeskString(IDS_WINDOWS_CLASSIC_NAME).c_str());
-	WCHAR localizedClassicName[128] = {};
-	if (LoadStringW(g_hThemeUI, 2016, localizedClassicName,
-		ARRAYSIZE(localizedClassicName)) > 0)
-		StringCchCopyW(classicThemeName, ARRAYSIZE(classicThemeName), localizedClassicName);
-
 	int themeCount = 0;
 	HRESULT hr = pThemeManager->GetThemeCount(&themeCount);
 	if (FAILED(hr)) return hr;
@@ -315,8 +335,8 @@ static HRESULT ApplyClassicThemeWithoutChangingWallpaper(HWND hwnd)
 
 		LPWSTR displayName = nullptr;
 		hr = theme->get_DisplayName(&displayName);
-		const bool isClassic = SUCCEEDED(hr) && displayName &&
-			StrCmpI(displayName, classicThemeName) == 0;
+		const bool isClassic = SUCCEEDED(hr) &&
+			IsWindowsClassicThemeName(displayName);
 		// The Theme Manager interface does not document the allocator for this
 		// returned string. Do not free it with a guessed allocator; ThemesPage
 		// uses the same API and keeps the returned name alive for the page.
@@ -593,28 +613,34 @@ BOOL CAppearanceDlgProc::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, B
 		}
 	}
 
-	HKEY key;
-	RegOpenKeyEx(HKEY_CURRENT_USER, L"Control Panel\\Appearance\\Schemes", 0, KEY_READ, &key);
-	if (!key) return FALSE;
-
-	RegQueryInfoKey(key, 0, 0, 0, 0, 0, 0, &mapSize, 0, 0, 0, 0);
-	schemeMap = (SCHEMEDATA*)malloc(mapSize * sizeof(SCHEMEDATA));
-
-	LSTATUS staus = ERROR_SUCCESS;
-	for (DWORD i = 0; i <= mapSize; ++i)
+	mapSize = 0;
+	schemeMap = nullptr;
+	HKEY key = nullptr;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Appearance\\Schemes",
+		0, KEY_READ, &key) == ERROR_SUCCESS)
 	{
-		if (staus != ERROR_SUCCESS) break;
-
-		WCHAR value[256];
-		DWORD dwType;
-		DWORD dwSize = ARRAYSIZE(value);
-		staus = RegEnumValue(key, i, value, &dwSize, 0, &dwType, NULL, NULL);
-		if (dwType == REG_BINARY)
+		DWORD valueCount = 0;
+		if (RegQueryInfoKeyW(key, nullptr, nullptr, nullptr, nullptr, nullptr,
+			nullptr, &valueCount, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS &&
+			valueCount > 0)
 		{
-			FillSchemeDataMap(value, i);
+			schemeMap = static_cast<SCHEMEDATA*>(calloc(valueCount, sizeof(SCHEMEDATA)));
+			if (schemeMap)
+			{
+				for (DWORD i = 0; i < valueCount; ++i)
+				{
+					WCHAR valueName[256] = {};
+					DWORD nameLength = ARRAYSIZE(valueName);
+					DWORD valueType = 0;
+					if (RegEnumValueW(key, i, valueName, &nameLength, nullptr,
+						&valueType, nullptr, nullptr) == ERROR_SUCCESS &&
+						valueType == REG_BINARY && FillSchemeDataMap(valueName, mapSize))
+						++mapSize;
+				}
+			}
 		}
+		RegCloseKey(key);
 	}
-	RegCloseKey(key);
 
 	int index = ComboBox_AddString(hThemesCombobox,
 		LoadDeskString(IDS_WINDOWS_XP_STYLE).c_str());
@@ -1394,15 +1420,22 @@ void CAppearanceDlgProc::_UpdateColorBox(LPWSTR data)
 			}
 			if (index < 0)
 			{
-				// For an unrecognized, unedited palette, show a real named preset.
+				// Entering Classic from an msstyle has no active Classic scheme to
+				// compare. The stock preset's registry name and some palette bytes
+				// may differ by locale, so choose the closest stock palette.
+				ULONGLONG bestDistance = static_cast<ULONGLONG>(-1);
 				for (int candidate = 0; candidate < ComboBox_GetCount(hColorCombobox); ++candidate)
 				{
 					SCHEMEDATA* candidateScheme =
 						(SCHEMEDATA*)ComboBox_GetItemData(hColorCombobox, candidate);
-					if (candidateScheme && StrCmpI(candidateScheme->name, L"Windows Standard") == 0)
+					if (!candidateScheme || !(candidateScheme->variant & HAS_NORMAL))
+						continue;
+					const ULONGLONG distance = WindowsStandardPaletteDistance(candidateScheme);
+					if (distance < bestDistance)
 					{
+						bestDistance = distance;
 						index = candidate;
-						break;
+						if (distance == 0) break;
 					}
 				}
 			}
@@ -1430,7 +1463,8 @@ void CAppearanceDlgProc::_UpdateFontBox(LPWSTR data)
 	if (lstrcmp(data, L"(classic)") == 0)
 	{
 		int index = ComboBox_GetCurSel(hColorCombobox);
-		SCHEMEDATA* data = (SCHEMEDATA*)ComboBox_GetItemData(hColorCombobox, index);
+		SCHEMEDATA* data = index == CB_ERR ? nullptr :
+			(SCHEMEDATA*)ComboBox_GetItemData(hColorCombobox, index);
 		selectedTheme->selectedScheme = data;
 		selectedTheme->newColor = NcGetSysColor(COLOR_BACKGROUND);
 
@@ -1680,37 +1714,38 @@ void CAppearanceDlgProc::_FilterHiddenThemes()
 }
 
 
-VOID CAppearanceDlgProc::FillSchemeDataMap(LPCWSTR theme, int index)
+bool CAppearanceDlgProc::FillSchemeDataMap(LPCWSTR theme, ULONG index)
 {
-	BYTE* value;
-	DWORD dwSize;
-	HRESULT hr = RegGetValue(HKEY_CURRENT_USER, L"Control Panel\\Appearance\\Schemes", theme, RRF_RT_REG_BINARY, NULL, NULL, &dwSize);
-
-	value = (BYTE*)malloc(dwSize);
-	hr = RegGetValue(HKEY_CURRENT_USER, L"Control Panel\\Appearance\\Schemes", theme, RRF_RT_REG_BINARY, NULL, value, &dwSize);
-
+	constexpr DWORD requiredSize = 596 + MAX_COLORS * sizeof(COLORREF);
+	DWORD dwSize = 0;
+	if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Appearance\\Schemes",
+		theme, RRF_RT_REG_BINARY, nullptr, nullptr, &dwSize) != ERROR_SUCCESS ||
+		dwSize < requiredSize)
+		return false;
+	std::vector<BYTE> value(dwSize);
+	if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Appearance\\Schemes",
+		theme, RRF_RT_REG_BINARY, nullptr, value.data(), &dwSize) != ERROR_SUCCESS ||
+		dwSize < requiredSize)
+		return false;
 	SCHEMEDATA data = {};
-	data.version = READ_AT(DWORD, value, 0);
-	data.ncm = READ_AT(NONCLIENTMETRICSW_2k, value, 4);
-	data.lfIconTitle = READ_AT(LOGFONTW, value, 504);
+	memcpy(&data.version, value.data(), sizeof(data.version));
+	memcpy(&data.ncm, value.data() + 4, sizeof(data.ncm));
+	memcpy(&data.lfIconTitle, value.data() + 504, sizeof(data.lfIconTitle));
 	int start = 596;
 	for (int i = 0; i < MAX_COLORS; i++)
 	{
-		data.rgb[i] = READ_AT(COLORREF, value, start + (4 * i));
+		memcpy(&data.rgb[i], value.data() + start + sizeof(COLORREF) * i,
+			sizeof(COLORREF));
 	}
 
-	if (wcsstr(theme, L"@"))
-	{
-		WCHAR buffer[256];
-		HRESULT hr = SHLoadIndirectString(theme, buffer, ARRAYSIZE(buffer), NULL);
-
-		lstrcpy(data.name, SUCCEEDED(hr) ? buffer : theme);
-	}
-	else
-	{
-		lstrcpy(data.name, theme);
-	}
+	LPCWSTR displayName = theme;
+	WCHAR localizedName[256] = {};
+	if (theme[0] == L'@' &&
+		SUCCEEDED(SHLoadIndirectString(theme, localizedName,
+			ARRAYSIZE(localizedName), nullptr)) && localizedName[0])
+		displayName = localizedName;
+	if (FAILED(StringCchCopyW(data.name, ARRAYSIZE(data.name), displayName)))
+		return false;
 	schemeMap[index] = data;
-
-	free(value);
+	return true;
 }

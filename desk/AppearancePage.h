@@ -37,7 +37,7 @@ private:
 	BOOL OnSetActive();
 	BOOL OnApply();
 
-	void FillSchemeDataMap(LPCWSTR theme, int index);
+	bool FillSchemeDataMap(LPCWSTR theme, ULONG index);
 	void _UpdateColorBox(LPWSTR data);
 	void _UpdateFontBox(LPWSTR data);
 	void _FixColorBox();

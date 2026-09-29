@@ -214,6 +214,7 @@ bool IsWindowsClassicThemeName(LPCWSTR name)
 {
 	if (!name || !name[0]) return false;
 	if (StrCmpIW(name, L"Windows Classic") == 0 ||
+		StrCmpIW(name, L"Windows \u30AF\u30E9\u30B7\u30C3\u30AF") == 0 ||
 		StrCmpIW(name, L"@themeui.dll,-2016") == 0)
 		return true;
 

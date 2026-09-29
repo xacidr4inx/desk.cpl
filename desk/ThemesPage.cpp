@@ -702,6 +702,21 @@ bool IsAvailableThemeFile(LPCWSTR path)
 		StrCmpIW(PathFindExtensionW(path), L".theme") == 0 && PathFileExistsW(path);
 }
 
+bool IsSystemThemeFilePath(LPCWSTR path)
+{
+	if (!path || !path[0]) return false;
+	WCHAR windowsDir[MAX_PATH] = {};
+	UINT windowsDirLength = GetWindowsDirectoryW(windowsDir, ARRAYSIZE(windowsDir));
+	if (!windowsDirLength || windowsDirLength >= ARRAYSIZE(windowsDir)) return false;
+	WCHAR themeDirectory[MAX_PATH] = {};
+	if (FAILED(StringCchPrintfW(themeDirectory, ARRAYSIZE(themeDirectory),
+		L"%s\\Resources\\Themes\\", windowsDir))) return false;
+	WCHAR fullPath[MAX_PATH] = {};
+	DWORD fullPathLength = GetFullPathNameW(path, ARRAYSIZE(fullPath), fullPath, nullptr);
+	if (!fullPathLength || fullPathLength >= ARRAYSIZE(fullPath)) return false;
+	return _wcsnicmp(fullPath, themeDirectory, lstrlenW(themeDirectory)) == 0;
+}
+
 void RememberThemeFileInHistory(LPCWSTR path)
 {
 	if (!IsAvailableThemeFile(path)) return;
@@ -841,6 +856,9 @@ void RememberSavedThemePath(ITheme10* theme, LPCWSTR path)
 DWORD RemoveGeneratedThemeCopyWithoutConfirmation(LPCWSTR savedThemePath)
 {
 	if (!savedThemePath || !savedThemePath[0]) return ERROR_INVALID_PARAMETER;
+	// Never remove a same-named per-user theme merely because a theme from the
+	// Windows resources directory was selected.
+	if (IsSystemThemeFilePath(savedThemePath)) return ERROR_SUCCESS;
 
 	WCHAR localAppData[MAX_PATH] = {};
 	if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr,
@@ -945,6 +963,20 @@ bool IsStockBuiltinTheme(LPCWSTR name)
 	return IsNonDeletableBuiltinTheme(name) || IsHiddenBuiltinTheme(name) ||
 		(name && StrCmpIW(name, L"Embedded") == 0);
 }
+
+bool IsBundledSystemThemeFile(LPCWSTR path, LPCWSTR displayName)
+{
+	if (!IsSystemThemeFilePath(path) || !IsStockBuiltinTheme(displayName)) return false;
+	static constexpr LPCWSTR bundledFiles[] = {
+		L"aero.theme", L"Embedded.theme", L"Olive Green.theme",
+		L"Royale Noir.theme", L"Royale.theme", L"Silver.theme",
+		L"Windows Classic.theme", L"Zune.theme"
+	};
+	LPCWSTR fileName = PathFindFileNameW(path);
+	for (LPCWSTR bundledFile : bundledFiles)
+		if (StrCmpIW(fileName, bundledFile) == 0) return true;
+	return false;
+}
 }
 
 LSTATUS WriteClassicSchemeToThemeFile(LPCWSTR path, const SCHEMEDATA* scheme)
@@ -993,6 +1025,38 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 	const bool classic = selectedTheme && selectedTheme->szMsstylePath == L"(classic)";
 	int selectedComboIndex = CB_ERR;
 	int defaultBlueComboIndex = CB_ERR;
+	// This combo is intentionally unsorted. Insert the launch-time baseline
+	// before registered and file-backed themes so it remains the first row.
+	const bool startupThemeIsDefault = defaultThemeIsSet &&
+		defaultThemeIndex == startupThemeIndex;
+	const bool pendingNonStartupThemeFile = !pendingThemeFilePath.empty() &&
+		(startupThemeSnapshotPath.empty() ||
+			StrCmpIW(pendingThemeFilePath.c_str(), startupThemeSnapshotPath.c_str()) != 0);
+	int startupComboIndex = CB_ERR;
+	if (!startupThemeIsDefault)
+		startupComboIndex = ComboBox_AddString(hCombobox, GetCurrentThemeComboLabel());
+	if (startupComboIndex != CB_ERR && startupComboIndex != CB_ERRSPACE)
+	{
+		ComboBox_SetItemData(hCombobox, startupComboIndex, THEME_COMBO_STARTUP_BASELINE);
+		if (startupSnapshotIsCurrent && !pendingNonStartupThemeFile &&
+			!derivativeModified && selectedIndex == startupThemeIndex)
+			selectedComboIndex = startupComboIndex;
+	}
+	// Keep the modified working state adjacent to its baseline, ahead of the
+	// manager and file-backed rows. If the baseline is hidden, this is row one.
+	int modifiedComboIndex = CB_ERR;
+	if (derivativeModified)
+	{
+		WCHAR modifiedLabel[MAX_PATH] = {};
+		GetModifiedThemeComboLabel(currentThemeParentLabel.c_str(), modifiedLabel);
+		modifiedComboIndex = ComboBox_AddString(hCombobox, modifiedLabel);
+		if (modifiedComboIndex != CB_ERR && modifiedComboIndex != CB_ERRSPACE)
+		{
+			ComboBox_SetItemData(hCombobox, modifiedComboIndex,
+				THEME_COMBO_SESSION_MODIFIED);
+			selectedComboIndex = modifiedComboIndex;
+		}
+	}
 	WCHAR selectedSavedThemePath[MAX_PATH] = {};
 	for (int i = 0; i < count; ++i)
 	{
@@ -1135,7 +1199,6 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 	auto addSavedThemeFile = [&](LPCWSTR candidate)
 	{
 		if (!IsAvailableThemeFile(candidate)) return;
-		RememberThemeFileInHistory(candidate);
 		WCHAR savedName[MAX_PATH] = {};
 		GetPrivateProfileStringW(L"Theme", L"DisplayName", L"", savedName,
 			ARRAYSIZE(savedName), candidate);
@@ -1150,7 +1213,9 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 			StringCchCopyW(savedName, ARRAYSIZE(savedName), PathFindFileNameW(candidate));
 			PathRemoveExtensionW(savedName);
 		}
+		if (IsBundledSystemThemeFile(candidate, savedName)) return;
 		if (IsCurrentThemeLabel(savedName)) return;
+		RememberThemeFileInHistory(candidate);
 
 		for (int i = 0; i < ComboBox_GetCount(hCombobox); ++i)
 		{
@@ -1167,7 +1232,8 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 					existingTheme && SUCCEEDED(existingTheme->get_DisplayName(&existingName)) &&
 					IsUnsavedThemeEntry(existingName))
 					continue;
-				GetDeletableThemePath(i, existingPath);
+				if (!existingTheme || !GetRegisteredThemeFilePath(existingTheme.Get(), existingPath))
+					GetDeletableThemePath(i, existingPath);
 			}
 			if (existingPath[0] && StrCmpIW(existingPath, candidate) == 0)
 			{
@@ -1214,14 +1280,19 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 			selectedComboIndex = comboIndex;
 	};
 
-	// Keep files saved in Documents and the per-user Themes folder visible,
-	// even if they have not been registered by Theme Manager.
-	WCHAR directories[3][MAX_PATH] = {};
+	// Include installed system themes as well as per-user files, even when
+	// Theme Manager has not registered them yet.
+	WCHAR directories[4][MAX_PATH] = {};
 	SHGetFolderPathW(m_hWnd, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, directories[0]);
 	ExpandEnvironmentStringsW(L"%USERPROFILE%\\Documents",
 		directories[1], ARRAYSIZE(directories[1]));
 	ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Themes",
 		directories[2], ARRAYSIZE(directories[2]));
+	WCHAR windowsDir[MAX_PATH] = {};
+	UINT windowsDirLength = GetWindowsDirectoryW(windowsDir, ARRAYSIZE(windowsDir));
+	if (windowsDirLength && windowsDirLength < ARRAYSIZE(windowsDir))
+		StringCchPrintfW(directories[3], ARRAYSIZE(directories[3]),
+			L"%s\\Resources\\Themes", windowsDir);
 	for (const auto& directory : directories)
 	{
 		if (!directory[0]) continue;
@@ -1248,38 +1319,8 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 			addSavedThemeFile(historicalPath);
 	}
 
-	// The launch-time state is a stable, clean baseline, separate from the
-	// manager's mutable working entry.
-	int startupComboIndex = CB_ERR;
-	const bool startupThemeIsDefault = defaultThemeIsSet &&
-		defaultThemeIndex == startupThemeIndex;
-	const bool pendingNonStartupThemeFile = !pendingThemeFilePath.empty() &&
-		(startupThemeSnapshotPath.empty() ||
-			StrCmpIW(pendingThemeFilePath.c_str(), startupThemeSnapshotPath.c_str()) != 0);
-	if (!startupThemeIsDefault)
-		startupComboIndex = ComboBox_AddString(hCombobox, GetCurrentThemeComboLabel());
-	if (startupComboIndex != CB_ERR && startupComboIndex != CB_ERRSPACE)
-	{
-		ComboBox_SetItemData(hCombobox, startupComboIndex, THEME_COMBO_STARTUP_BASELINE);
-		if (startupSnapshotIsCurrent && !pendingNonStartupThemeFile &&
-			!derivativeModified && selectedIndex == startupThemeIndex)
-			selectedComboIndex = startupComboIndex;
-	}
-
-	int modifiedComboIndex = CB_ERR;
-	if (derivativeModified)
-	{
-		WCHAR modifiedLabel[MAX_PATH] = {};
-		GetModifiedThemeComboLabel(currentThemeParentLabel.c_str(), modifiedLabel);
-		modifiedComboIndex = ComboBox_AddString(hCombobox, modifiedLabel);
-		if (modifiedComboIndex != CB_ERR && modifiedComboIndex != CB_ERRSPACE)
-		{
-			ComboBox_SetItemData(hCombobox, modifiedComboIndex,
-				THEME_COMBO_SESSION_MODIFIED);
-			selectedComboIndex = modifiedComboIndex;
-		}
-	}
-	if (derivativeModified && modifiedComboIndex != CB_ERR)
+	if (derivativeModified && modifiedComboIndex != CB_ERR &&
+		modifiedComboIndex != CB_ERRSPACE)
 		selectedComboIndex = modifiedComboIndex;
 		else if (startupSnapshotIsCurrent && !pendingNonStartupThemeFile &&
 			!derivativeModified &&
@@ -1844,7 +1885,7 @@ BOOL CThemeDlgProc::OnThemeComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& b
 			selectedTheme->fMsstyleChanged = true;
 		}
 	}
-	else if (PathFileExists(path)
+	else if (path && PathFileExists(path)
 		&& selectedTheme->szMsstylePath.compare(path) != 0)
 	{
 		selectedTheme->szMsstylePath = path;
@@ -2169,14 +2210,16 @@ bool CThemeDlgProc::GetDeletableThemePath(int themeIndex, WCHAR (&path)[MAX_PATH
 void CThemeDlgProc::UpdateDeleteButton()
 {
 	WCHAR path[MAX_PATH] = {};
-	::EnableWindow(GetDlgItem(1108), GetDeletableThemePath(ComboBox_GetCurSel(hCombobox), path));
+	bool canDelete = GetDeletableThemePath(ComboBox_GetCurSel(hCombobox), path) &&
+		!IsSystemThemeFilePath(path);
+	::EnableWindow(GetDlgItem(1108), canDelete);
 }
 
 BOOL CThemeDlgProc::OnDelete(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
 	int index = ComboBox_GetCurSel(hCombobox);
 	WCHAR path[MAX_PATH] = {};
-	if (!GetDeletableThemePath(index, path))
+	if (!GetDeletableThemePath(index, path) || IsSystemThemeFilePath(path))
 	{
 		UpdateDeleteButton();
 		return 0;
