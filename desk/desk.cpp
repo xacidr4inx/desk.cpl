@@ -440,7 +440,9 @@ unsigned __stdcall RunDisplayPropertiesSta(void* context)
 
 // The desktop Properties verb calls this directly through rundll32. Its
 // calling thread may already be MTA, while Theme Manager requires STA.
-// Keep the export alive while a fresh STA thread owns the modal sheet.
+// Keep the export alive while a fresh STA thread owns the modal sheet. Theme
+// changes send messages to windows on this calling thread; a plain wait would
+// deadlock when the STA waits for one of those messages to be processed.
 extern "C" void CALLBACK OpenDisplayPropertiesW(HWND, HINSTANCE, LPWSTR commandLine, int)
 {
 	if (ActivateExistingDisplayProperties())
@@ -454,8 +456,41 @@ extern "C" void CALLBACK OpenDisplayPropertiesW(HWND, HINSTANCE, LPWSTR commandL
 		return;
 	}
 	HANDLE handle = reinterpret_cast<HANDLE>(thread);
-	WaitForSingleObject(handle, INFINITE);
+	bool quitPending = false;
+	int quitCode = 0;
+	for (;;)
+	{
+		DWORD wait = MsgWaitForMultipleObjectsEx(1, &handle, INFINITE,
+			QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+		if (wait == WAIT_OBJECT_0)
+			break;
+		if (wait == WAIT_OBJECT_0 + 1)
+		{
+			MSG message;
+			while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+			{
+				if (message.message == WM_QUIT)
+				{
+					quitPending = true;
+					quitCode = static_cast<int>(message.wParam);
+					continue;
+				}
+				TranslateMessage(&message);
+				DispatchMessageW(&message);
+			}
+		}
+		else if (wait == WAIT_FAILED)
+		{
+			// Preserve the export's lifetime if the wait fails unexpectedly.
+			// PeekMessage still services synchronous sends on this thread.
+			MSG message;
+			PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+			Sleep(10);
+		}
+	}
 	CloseHandle(handle);
+	if (quitPending)
+		PostQuitMessage(quitCode);
 }
 
 extern "C" LONG APIENTRY CPlApplet(

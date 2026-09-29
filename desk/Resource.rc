@@ -158,6 +158,7 @@ BEGIN
     IDS_THEME_DELETE_ERROR  "The theme could not be deleted. (0x%08X)"
     IDS_THEME_PREPARE_ERROR "The theme could not be prepared for applying. (0x%08X)"
     IDS_THEME_APPLY_ERROR   "The selected theme could not be applied. (0x%08X)"
+    IDS_THEME_COPY_BLOCKED "The theme could not be staged safely. A different or changed file may already use its name in your Themes folder, or the folder may be inaccessible. No existing file was deleted."
     IDS_THEME_APPLIED_CLASSIC_ERROR "The theme was applied, but its Classic color scheme could not be applied. (0x%08X)"
     IDS_CLASSIC_SCHEME_APPLY_ERROR "The selected Classic color scheme could not be applied. (0x%08X)"
     IDS_STANDARD_SCHEME_APPLY_ERROR "The Windows Standard color scheme could not be applied. (0x%08X)"

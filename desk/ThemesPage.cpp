@@ -29,6 +29,7 @@ constexpr LPARAM THEME_COMBO_CURRENT = -5;
 constexpr LPARAM THEME_COMBO_STARTUP_BASELINE = -6;
 constexpr LPARAM THEME_COMBO_SESSION_MODIFIED = -7;
 constexpr LPCWSTR THEME_FILE_HISTORY_KEY = L"Software\\deskn\\SavedThemeHistory";
+constexpr LPCWSTR STAGED_THEME_KEY = L"Software\\deskn\\StagedThemeCopies";
 constexpr DWORD THEME_FILE_HISTORY_LIMIT = 256;
 constexpr LPCWSTR CURRENT_THEME_KEY =
 	L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\CurrentTheme";
@@ -165,6 +166,66 @@ void LogClassicMetricsReadback(LPCWSTR stage, const SCHEMEDATA& scheme, int dpi)
 		actual.iBorderWidth, expected.iBorderWidth,
 		actual.iScrollWidth, expected.iScrollWidth,
 		actual.lfCaptionFont.lfHeight, expected.lfCaptionFont.lfHeight);
+}
+
+bool ClassicLogFontsMatch(const LOGFONTW& a, const LOGFONTW& b)
+{
+	return a.lfHeight == b.lfHeight && a.lfWidth == b.lfWidth &&
+		a.lfEscapement == b.lfEscapement && a.lfOrientation == b.lfOrientation &&
+		a.lfWeight == b.lfWeight && a.lfItalic == b.lfItalic &&
+		a.lfUnderline == b.lfUnderline && a.lfStrikeOut == b.lfStrikeOut &&
+		a.lfCharSet == b.lfCharSet && a.lfOutPrecision == b.lfOutPrecision &&
+		a.lfClipPrecision == b.lfClipPrecision && a.lfQuality == b.lfQuality &&
+		a.lfPitchAndFamily == b.lfPitchAndFamily &&
+		StrCmpIW(a.lfFaceName, b.lfFaceName) == 0;
+}
+
+// Compare the exact values ApplySchemeMetrics would write. The final pass is
+// normally redundant because ApplyClassicScheme already started a metrics
+// worker; repeating its synchronous broadcast can hang this UI thread.
+bool ClassicMetricsAlreadyApplied(const SCHEMEDATA& scheme, int dpi)
+{
+	if (dpi <= 0) return false;
+	NONCLIENTMETRICSW expected = {};
+	memcpy(&expected, &scheme.ncm, sizeof(scheme.ncm));
+	expected.cbSize = sizeof(expected);
+	expected.iPaddedBorderWidth = MulDiv(scheme.iPaddedBorderWidth, dpi, 96);
+	if (!scheme.dpiScaled)
+		ScaleNonClientMetrics(expected, dpi);
+	else
+	{
+		ScaleLogFont(expected.lfCaptionFont, dpi);
+		ScaleLogFont(expected.lfSmCaptionFont, dpi);
+		ScaleLogFont(expected.lfMenuFont, dpi);
+		ScaleLogFont(expected.lfStatusFont, dpi);
+		ScaleLogFont(expected.lfMessageFont, dpi);
+	}
+	LOGFONTW expectedIconFont = scheme.lfIconTitle;
+	ScaleLogFont(expectedIconFont, dpi);
+
+	NONCLIENTMETRICSW live = { sizeof(live) };
+	LOGFONTW liveIconFont = {};
+	if (!SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(live), &live, 0) ||
+		!SystemParametersInfoW(SPI_GETICONTITLELOGFONT, sizeof(liveIconFont),
+			&liveIconFont, 0))
+		return false;
+
+	return live.iBorderWidth == expected.iBorderWidth &&
+		live.iScrollWidth == expected.iScrollWidth &&
+		live.iScrollHeight == expected.iScrollHeight &&
+		live.iCaptionWidth == expected.iCaptionWidth &&
+		live.iCaptionHeight == expected.iCaptionHeight &&
+		live.iSmCaptionWidth == expected.iSmCaptionWidth &&
+		live.iSmCaptionHeight == expected.iSmCaptionHeight &&
+		live.iMenuWidth == expected.iMenuWidth &&
+		live.iMenuHeight == expected.iMenuHeight &&
+		live.iPaddedBorderWidth == expected.iPaddedBorderWidth &&
+		ClassicLogFontsMatch(live.lfCaptionFont, expected.lfCaptionFont) &&
+		ClassicLogFontsMatch(live.lfSmCaptionFont, expected.lfSmCaptionFont) &&
+		ClassicLogFontsMatch(live.lfMenuFont, expected.lfMenuFont) &&
+		ClassicLogFontsMatch(live.lfStatusFont, expected.lfStatusFont) &&
+		ClassicLogFontsMatch(live.lfMessageFont, expected.lfMessageFont) &&
+		ClassicLogFontsMatch(liveIconFont, expectedIconFont);
 }
 
 struct THEME_NONCLIENTMETRICSA
@@ -804,21 +865,37 @@ bool UpdateCurrentThemeSnapshot(std::wstring& snapshotPath)
 		SHGFP_TYPE_CURRENT, localAppData)))
 		return false;
 
-	WCHAR themesDirectory[MAX_PATH] = {};
-	if (FAILED(StringCchPrintfW(themesDirectory, ARRAYSIZE(themesDirectory),
-		L"%s\\Microsoft\\Windows\\Themes", localAppData)))
+	// Theme Manager enumerates files under Microsoft\Windows\Themes. Keeping
+	// our private baseline there lets its apply/import cleanup offer to recycle
+	// deskn-current.theme. Store it outside that managed directory instead.
+	WCHAR snapshotDirectory[MAX_PATH] = {};
+	if (FAILED(StringCchPrintfW(snapshotDirectory, ARRAYSIZE(snapshotDirectory),
+		L"%s\\deskn", localAppData)))
 		return false;
-	if (!CreateDirectoryW(themesDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+	if (!CreateDirectoryW(snapshotDirectory, nullptr) &&
+		GetLastError() != ERROR_ALREADY_EXISTS)
 		return false;
 
 	WCHAR destination[MAX_PATH] = {};
 	if (FAILED(StringCchPrintfW(destination, ARRAYSIZE(destination),
-		L"%s\\deskn-current.theme", themesDirectory)))
+		L"%s\\deskn-current.theme", snapshotDirectory)))
 		return false;
 
 	WCHAR source[MAX_PATH] = {};
 	if (!GetCurrentThemeFilePath(source))
 		return false;
+
+	WCHAR legacyPath[MAX_PATH] = {};
+	if (SUCCEEDED(StringCchPrintfW(legacyPath, ARRAYSIZE(legacyPath),
+		L"%s\\Microsoft\\Windows\\Themes\\deskn-current.theme", localAppData)) &&
+		StrCmpIW(source, legacyPath) != 0 && PathFileExistsW(legacyPath))
+	{
+		// Migrate the applet's old snapshot once. A filesystem move does not
+		// send it to the Recycle Bin or create another Themes-folder copy.
+		if (!MoveFileExW(legacyPath, destination, MOVEFILE_REPLACE_EXISTING))
+			LogThemeApplyDebug(L"Could not move legacy snapshot out of Themes, error=%u",
+				GetLastError());
+	}
 	if (StrCmpIW(source, destination) != 0 && !CopyFileW(source, destination, FALSE))
 		return false;
 
@@ -872,6 +949,345 @@ bool ThemeFilesHaveSameContents(LPCWSTR firstPath, LPCWSTR secondPath)
 	CloseHandle(second);
 	CloseHandle(first);
 	return same;
+}
+
+struct StagedFileIdentity
+{
+	DWORD volume;
+	DWORD indexHigh;
+	DWORD indexLow;
+	DWORD sizeHigh;
+	DWORD sizeLow;
+	FILETIME lastWrite;
+};
+
+bool GetStagedFileIdentity(LPCWSTR path, StagedFileIdentity& identity)
+{
+	HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE) return false;
+	BY_HANDLE_FILE_INFORMATION info = {};
+	bool ok = GetFileInformationByHandle(file, &info) != FALSE;
+	CloseHandle(file);
+	if (ok)
+		identity = { info.dwVolumeSerialNumber, info.nFileIndexHigh,
+			info.nFileIndexLow, info.nFileSizeHigh, info.nFileSizeLow,
+			info.ftLastWriteTime };
+	return ok;
+}
+
+bool SameStagedFileIdentity(const StagedFileIdentity& a,
+	const StagedFileIdentity& b)
+{
+	return memcmp(&a, &b, sizeof(a)) == 0;
+}
+
+bool GetStagedThemePaths(LPCWSTR source, std::wstring& original,
+	std::wstring& staged)
+{
+	WCHAR absolute[MAX_PATH] = {};
+	DWORD length = GetFullPathNameW(source, ARRAYSIZE(absolute), absolute, nullptr);
+	if (!length || length >= ARRAYSIZE(absolute) ||
+		StrCmpIW(PathFindExtensionW(absolute), L".theme") != 0)
+		return false;
+	WCHAR localAppData[MAX_PATH] = {};
+	if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr,
+		SHGFP_TYPE_CURRENT, localAppData))) return false;
+	WCHAR target[MAX_PATH] = {};
+	if (FAILED(StringCchPrintfW(target, ARRAYSIZE(target),
+		L"%s\\Microsoft\\Windows\\Themes\\%s", localAppData,
+		PathFindFileNameW(absolute)))) return false;
+	original = absolute;
+	staged = target;
+	return true;
+}
+
+std::wstring StagedThemeRecordName(LPCWSTR source)
+{
+	// The full path is also stored and checked, so a hash collision cannot
+	// authorize reuse or deletion of another theme's file.
+	ULONGLONG hash = 14695981039346656037ULL;
+	for (LPCWSTR p = source; *p; ++p)
+	{
+		WCHAR ch = static_cast<WCHAR>(towlower(*p));
+		hash ^= static_cast<BYTE>(ch);
+		hash *= 1099511628211ULL;
+		hash ^= static_cast<BYTE>(ch >> 8);
+		hash *= 1099511628211ULL;
+	}
+	WCHAR name[17] = {};
+	StringCchPrintfW(name, ARRAYSIZE(name), L"%016llX", hash);
+	return name;
+}
+
+bool GetAlternateStagedThemePath(LPCWSTR original, LPCWSTR ordinaryStage,
+	std::wstring& alternate)
+{
+	std::wstring directory = ordinaryStage;
+	size_t separator = directory.find_last_of(L"\\/");
+	if (separator == std::wstring::npos) return false;
+	directory.resize(separator + 1);
+	alternate = directory + L"deskn-" +
+		StagedThemeRecordName(original) + L".theme";
+	return alternate.size() < MAX_PATH &&
+		StrCmpIW(alternate.c_str(), original) != 0;
+}
+
+bool ReadStagedThemeRecord(HKEY key, std::wstring& original,
+	std::wstring& staged, StagedFileIdentity& identity)
+{
+	WCHAR sourcePath[MAX_PATH] = {};
+	WCHAR stagePath[MAX_PATH] = {};
+	DWORD sourceBytes = sizeof(sourcePath);
+	DWORD stageBytes = sizeof(stagePath);
+	DWORD identityBytes = sizeof(identity);
+	if (RegGetValueW(key, nullptr, L"OriginalPath", RRF_RT_REG_SZ,
+		nullptr, sourcePath, &sourceBytes) != ERROR_SUCCESS ||
+		RegGetValueW(key, nullptr, L"StagePath", RRF_RT_REG_SZ,
+		nullptr, stagePath, &stageBytes) != ERROR_SUCCESS ||
+		RegGetValueW(key, nullptr, L"StageIdentity", RRF_RT_REG_BINARY,
+		nullptr, &identity, &identityBytes) != ERROR_SUCCESS ||
+		identityBytes != sizeof(identity)) return false;
+	original = sourcePath;
+	staged = stagePath;
+	return true;
+}
+
+bool WriteStagedThemeRecord(HKEY key, LPCWSTR original, LPCWSTR staged,
+	const StagedFileIdentity& identity)
+{
+	return RegSetValueExW(key, L"OriginalPath", 0, REG_SZ,
+		reinterpret_cast<const BYTE*>(original),
+		static_cast<DWORD>((lstrlenW(original) + 1) * sizeof(WCHAR))) == ERROR_SUCCESS &&
+		RegSetValueExW(key, L"StagePath", 0, REG_SZ,
+		reinterpret_cast<const BYTE*>(staged),
+		static_cast<DWORD>((lstrlenW(staged) + 1) * sizeof(WCHAR))) == ERROR_SUCCESS &&
+		RegSetValueExW(key, L"StageIdentity", 0, REG_BINARY,
+		reinterpret_cast<const BYTE*>(&identity), sizeof(identity)) == ERROR_SUCCESS;
+}
+
+// The only automatic deletion of a staged file. Never delete a changed file,
+// an active theme, a missing-source ambiguity (access denied), or an unowned
+// same-named file. DeleteFileW bypasses the Recycle Bin as requested.
+void CleanupMissingOriginalStagedThemes()
+{
+	HKEY root = nullptr;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, STAGED_THEME_KEY, 0,
+		KEY_ENUMERATE_SUB_KEYS | KEY_SET_VALUE, &root) != ERROR_SUCCESS) return;
+	WCHAR active[MAX_PATH] = {};
+	DWORD activeBytes = sizeof(active);
+	RegGetValueW(HKEY_CURRENT_USER,
+		L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes",
+		L"CurrentTheme", RRF_RT_REG_SZ, nullptr, active, &activeBytes);
+	DWORD index = 0;
+	for (;;)
+	{
+		WCHAR name[64] = {};
+		DWORD nameLength = ARRAYSIZE(name);
+		LSTATUS status = RegEnumKeyExW(root, index, name, &nameLength,
+			nullptr, nullptr, nullptr, nullptr);
+		if (status == ERROR_NO_MORE_ITEMS) break;
+		if (status != ERROR_SUCCESS) { ++index; continue; }
+		HKEY record = nullptr;
+		std::wstring original, staged;
+		StagedFileIdentity saved = {}, live = {};
+		bool removeRecord = false;
+		if (RegOpenKeyExW(root, name, 0, KEY_QUERY_VALUE, &record) == ERROR_SUCCESS)
+		{
+			if (ReadStagedThemeRecord(record, original, staged, saved))
+			{
+				std::wstring expectedOriginal, expectedStage, alternate;
+				if (GetStagedThemePaths(original.c_str(), expectedOriginal,
+					expectedStage) &&
+					GetAlternateStagedThemePath(original.c_str(),
+						expectedStage.c_str(), alternate) &&
+					StrCmpIW(original.c_str(), expectedOriginal.c_str()) == 0 &&
+					(StrCmpIW(staged.c_str(), expectedStage.c_str()) == 0 ||
+						StrCmpIW(staged.c_str(), alternate.c_str()) == 0) &&
+					StagedThemeRecordName(original.c_str()) == name &&
+					StrCmpIW(active, staged.c_str()) != 0 &&
+					StrCmpIW(active, original.c_str()) != 0)
+				{
+					DWORD attrs = GetFileAttributesW(original.c_str());
+					if (attrs == INVALID_FILE_ATTRIBUTES &&
+						(GetLastError() == ERROR_FILE_NOT_FOUND ||
+							GetLastError() == ERROR_PATH_NOT_FOUND))
+					{
+						if (!GetStagedFileIdentity(staged.c_str(), live))
+							removeRecord = GetFileAttributesW(staged.c_str()) == INVALID_FILE_ATTRIBUTES &&
+								(GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND);
+						else if (SameStagedFileIdentity(saved, live) && DeleteFileW(staged.c_str()))
+						{
+							removeRecord = true;
+							LogThemeApplyDebug(L"Permanently removed orphaned staged theme %ls", staged.c_str());
+						}
+					}
+				}
+			}
+			RegCloseKey(record);
+		}
+		if (removeRecord && RegDeleteKeyW(root, name) == ERROR_SUCCESS)
+			continue;
+		++index;
+	}
+	RegCloseKey(root);
+}
+
+bool IsOwnedStagedThemePath(LPCWSTR candidate)
+{
+	HKEY root = nullptr;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, STAGED_THEME_KEY, 0,
+		KEY_ENUMERATE_SUB_KEYS, &root) != ERROR_SUCCESS) return false;
+	bool owned = false;
+	for (DWORD i = 0; !owned; ++i)
+	{
+		WCHAR name[64] = {};
+		DWORD length = ARRAYSIZE(name);
+		if (RegEnumKeyExW(root, i, name, &length, nullptr, nullptr,
+			nullptr, nullptr) != ERROR_SUCCESS) break;
+		HKEY record = nullptr;
+		if (RegOpenKeyExW(root, name, 0, KEY_QUERY_VALUE, &record) != ERROR_SUCCESS)
+			continue;
+		std::wstring original, staged;
+		StagedFileIdentity identity = {};
+		owned = ReadStagedThemeRecord(record, original, staged, identity) &&
+			StrCmpIW(candidate, staged.c_str()) == 0 &&
+			StrCmpIW(original.c_str(), staged.c_str()) != 0 &&
+			IsAvailableThemeFile(original.c_str());
+		RegCloseKey(record);
+	}
+	RegCloseKey(root);
+	return owned;
+}
+
+bool PrepareStableStagedTheme(LPCWSTR source, std::wstring& staged)
+{
+	std::wstring original;
+	if (!GetStagedThemePaths(source, original, staged) ||
+		!IsAvailableThemeFile(original.c_str())) return false;
+	if (StrCmpIW(original.c_str(), staged.c_str()) == 0) return true;
+	std::wstring ordinaryStage = staged;
+	std::wstring alternate;
+	if (!GetAlternateStagedThemePath(original.c_str(),
+		ordinaryStage.c_str(), alternate)) return false;
+	std::wstring recordName = StagedThemeRecordName(original.c_str());
+	HKEY root = nullptr;
+	if (RegCreateKeyExW(HKEY_CURRENT_USER, STAGED_THEME_KEY, 0, nullptr,
+		0, KEY_CREATE_SUB_KEY | KEY_ENUMERATE_SUB_KEYS, nullptr, &root,
+		nullptr) != ERROR_SUCCESS) return false;
+	HKEY record = nullptr;
+	DWORD disposition = 0;
+	LSTATUS status = RegCreateKeyExW(root, recordName.c_str(), 0, nullptr,
+		0, KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &record, &disposition);
+	if (status != ERROR_SUCCESS) { RegCloseKey(root); return false; }
+	std::wstring savedOriginal, savedStage;
+	StagedFileIdentity saved = {}, live = {};
+	bool recorded = ReadStagedThemeRecord(record, savedOriginal, savedStage, saved);
+	if (disposition == REG_OPENED_EXISTING_KEY && !recorded)
+	{
+		// An interrupted first staging attempt may have left an empty key.
+		// A key with any values is not ours to reinterpret or overwrite.
+		DWORD valueCount = 0;
+		if (RegQueryInfoKeyW(record, nullptr, nullptr, nullptr, nullptr,
+			nullptr, nullptr, &valueCount, nullptr, nullptr, nullptr,
+			nullptr) != ERROR_SUCCESS || valueCount != 0)
+		{
+			RegCloseKey(record);
+			RegCloseKey(root);
+			return false;
+		}
+	}
+	if (recorded)
+	{
+		if (StrCmpIW(savedOriginal.c_str(), original.c_str()) != 0 ||
+			(StrCmpIW(savedStage.c_str(), ordinaryStage.c_str()) != 0 &&
+				StrCmpIW(savedStage.c_str(), alternate.c_str()) != 0))
+		{
+			RegCloseKey(record);
+			RegCloseKey(root);
+			return false;
+		}
+		staged = savedStage;
+	}
+	else if (GetStagedFileIdentity(ordinaryStage.c_str(), live) &&
+		!ThemeFilesHaveSameContents(original.c_str(), ordinaryStage.c_str()))
+	{
+		// A different existing theme owns the ordinary filename. Give this
+		// original one deterministic private filename instead of overwriting it.
+		staged = alternate;
+	}
+	// Two originals must never share the same staged file, even when their
+	// contents happen to match. Check both names before choosing either one.
+	bool ordinaryOwned = false;
+	bool alternateOwned = false;
+	for (DWORD i = 0;; ++i)
+	{
+		WCHAR otherName[64] = {};
+		DWORD length = ARRAYSIZE(otherName);
+		if (RegEnumKeyExW(root, i, otherName, &length, nullptr, nullptr,
+			nullptr, nullptr) != ERROR_SUCCESS) break;
+		if (StrCmpIW(otherName, recordName.c_str()) == 0) continue;
+		HKEY other = nullptr;
+		if (RegOpenKeyExW(root, otherName, 0, KEY_QUERY_VALUE, &other) != ERROR_SUCCESS)
+			continue;
+		std::wstring otherOriginal, otherStage;
+		StagedFileIdentity otherIdentity = {};
+		if (ReadStagedThemeRecord(other, otherOriginal,
+			otherStage, otherIdentity))
+		{
+			ordinaryOwned |= StrCmpIW(otherStage.c_str(), ordinaryStage.c_str()) == 0;
+			alternateOwned |= StrCmpIW(otherStage.c_str(), alternate.c_str()) == 0;
+		}
+		RegCloseKey(other);
+	}
+	if (!recorded && ordinaryOwned)
+		staged = alternate;
+	if ((StrCmpIW(staged.c_str(), ordinaryStage.c_str()) == 0 && ordinaryOwned) ||
+		(StrCmpIW(staged.c_str(), alternate.c_str()) == 0 && alternateOwned))
+	{
+		RegCloseKey(record);
+		RegCloseKey(root);
+		return false;
+	}
+	RegCloseKey(root);
+	bool exists = GetStagedFileIdentity(staged.c_str(), live);
+	if (exists && recorded && !SameStagedFileIdentity(saved, live))
+	{
+		RegCloseKey(record);
+		return false;
+	}
+	if (exists && !recorded && !ThemeFilesHaveSameContents(original.c_str(),
+		staged.c_str()))
+	{
+		RegCloseKey(record);
+		return false;
+	}
+	if (!exists)
+	{
+		// Fail if a different file appears between the check and the copy.
+		if (!CopyFileW(original.c_str(), staged.c_str(), TRUE) ||
+			!GetStagedFileIdentity(staged.c_str(), live))
+		{
+			RegCloseKey(record);
+			return false;
+		}
+	}
+	else if (recorded && !ThemeFilesHaveSameContents(original.c_str(), staged.c_str()))
+	{
+		// Update the one owned file in place; never recycle it. The identity
+		// check above ensures no user-modified file is overwritten.
+		if (!CopyFileW(original.c_str(), staged.c_str(), FALSE) ||
+			!GetStagedFileIdentity(staged.c_str(), live))
+		{
+			RegCloseKey(record);
+			return false;
+		}
+	}
+	bool savedOk = WriteStagedThemeRecord(record, original.c_str(),
+		staged.c_str(), live);
+	RegCloseKey(record);
+	return savedOk;
 }
 
 bool IsSystemThemeFilePath(LPCWSTR path)
@@ -963,43 +1379,6 @@ bool GetThemeFileFromHistory(DWORD index, WCHAR (&path)[MAX_PATH])
 	return true;
 }
 
-class ScopedThemeSaveCleanupMarker
-{
-	static constexpr LPCWSTR kEnvironmentVariable = L"DESKN_THEME_SAVE_CLEANUP_PATH";
-	WCHAR previousValue[MAX_PATH] = {};
-	bool hadPreviousValue = false;
-	bool active = false;
-public:
-	explicit ScopedThemeSaveCleanupMarker(LPCWSTR savedThemePath)
-	{
-		WCHAR localAppData[MAX_PATH] = {};
-		if (!savedThemePath || !savedThemePath[0] ||
-			FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr,
-				SHGFP_TYPE_CURRENT, localAppData)))
-			return;
-
-		WCHAR cleanupPath[MAX_PATH] = {};
-		if (FAILED(StringCchPrintfW(cleanupPath, ARRAYSIZE(cleanupPath),
-			L"%s\\Microsoft\\Windows\\Themes\\%s",
-			localAppData, PathFindFileNameW(savedThemePath))))
-			return;
-
-		DWORD previousLength = GetEnvironmentVariableW(kEnvironmentVariable,
-			previousValue, ARRAYSIZE(previousValue));
-		if (previousLength >= ARRAYSIZE(previousValue))
-			return;
-		hadPreviousValue = previousLength != 0;
-		active = SetEnvironmentVariableW(kEnvironmentVariable, cleanupPath) != FALSE;
-	}
-
-	~ScopedThemeSaveCleanupMarker()
-	{
-		if (active)
-			SetEnvironmentVariableW(kEnvironmentVariable,
-				hadPreviousValue ? previousValue : nullptr);
-	}
-};
-
 void RememberSavedThemePath(ITheme10* theme, LPCWSTR path)
 {
 	RememberThemeFileInHistory(path);
@@ -1025,46 +1404,6 @@ void RememberSavedThemePath(ITheme10* theme, LPCWSTR path)
 		keyPath, createStatus, path ? path : L"(null)");
 }
 
-DWORD RemoveGeneratedThemeCopyWithoutConfirmation(LPCWSTR savedThemePath)
-{
-	if (!savedThemePath || !savedThemePath[0]) return ERROR_INVALID_PARAMETER;
-	// Never remove a same-named per-user theme merely because a theme from the
-	// Windows resources directory was selected.
-	if (IsSystemThemeFilePath(savedThemePath)) return ERROR_SUCCESS;
-
-	WCHAR localAppData[MAX_PATH] = {};
-	if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr,
-		SHGFP_TYPE_CURRENT, localAppData)))
-		return ERROR_PATH_NOT_FOUND;
-
-	WCHAR generatedThemePath[MAX_PATH] = {};
-	if (FAILED(StringCchPrintfW(generatedThemePath, ARRAYSIZE(generatedThemePath),
-		L"%s\\Microsoft\\Windows\\Themes\\%s",
-		localAppData, PathFindFileNameW(savedThemePath))))
-		return ERROR_FILENAME_EXCED_RANGE;
-
-	// AddAndSelectTheme replaces this per-user staging copy through the shell's
-	// transfer-confirmation API. Remove the exact generated copy first, using
-	// the same no-confirmation recycle-bin path as our explicit Delete button.
-	if (StrCmpIW(savedThemePath, generatedThemePath) == 0 ||
-		!PathFileExistsW(generatedThemePath))
-		return ERROR_SUCCESS;
-
-	WCHAR deletePath[MAX_PATH + 1] = {};
-	if (FAILED(StringCchCopyW(deletePath, ARRAYSIZE(deletePath), generatedThemePath)))
-		return ERROR_FILENAME_EXCED_RANGE;
-
-	SHFILEOPSTRUCTW deleteOperation = {};
-	deleteOperation.wFunc = FO_DELETE;
-	deleteOperation.pFrom = deletePath;
-	deleteOperation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION |
-		FOF_SILENT | FOF_NOERRORUI;
-	int result = SHFileOperationW(&deleteOperation);
-	if (result != 0) return static_cast<DWORD>(result);
-	if (deleteOperation.fAnyOperationsAborted) return ERROR_CANCELLED;
-	return ERROR_SUCCESS;
-}
-
 bool IsUnsavedThemeEntry(LPCWSTR name)
 {
 	if (!name) return false;
@@ -1077,6 +1416,44 @@ bool IsUnsavedThemeEntry(LPCWSTR name)
 		StrCmpIW(name + unsavedNameLength, modifiedSuffix) == 0))
 		return true;
 	return StrCmpIW(name, L"Modified Theme") == 0;
+}
+
+// Only select a file through Theme Manager when both its recorded path and
+// theme identity agree. The transient Unsaved Theme ID can be reused by an
+// older manager row, so its path alone is not sufficient evidence.
+int FindRegisteredThemeIndexForFile(LPCWSTR path)
+{
+	if (!path || !path[0] || !pThemeManager) return -1;
+	WCHAR fileName[MAX_PATH] = {};
+	GetPrivateProfileStringW(L"Theme", L"DisplayName", L"", fileName,
+		ARRAYSIZE(fileName), path);
+	if (!fileName[0])
+	{
+		StringCchCopyW(fileName, ARRAYSIZE(fileName), PathFindFileNameW(path));
+		PathRemoveExtensionW(fileName);
+	}
+	WCHAR currentPath[MAX_PATH] = {};
+	GetCurrentThemeFilePath(currentPath);
+	int currentIndex = -1;
+	pThemeManager->GetCurrentTheme(&currentIndex);
+	int count = 0;
+	if (FAILED(pThemeManager->GetThemeCount(&count))) return -1;
+	for (int i = 0; i < count; ++i)
+	{
+		ComPtr<ITheme10> theme;
+		WCHAR registeredPath[MAX_PATH] = {};
+		LPWSTR managerName = nullptr;
+		if (FAILED(pThemeManager->GetTheme(i, &theme)) || !theme ||
+			!GetRegisteredThemeFilePath(theme.Get(), registeredPath) ||
+			StrCmpIW(registeredPath, path) != 0 ||
+			FAILED(theme->get_DisplayName(&managerName)) || !managerName)
+			continue;
+		if (StrCmpIW(managerName, fileName) == 0 ||
+			(i == currentIndex && IsUnsavedThemeEntry(managerName) &&
+				StrCmpIW(currentPath, path) == 0))
+			return i;
+	}
+	return -1;
 }
 
 bool IsCurrentThemeLabel(LPCWSTR name)
@@ -1207,6 +1584,7 @@ bool LoadClassicSchemeFromThemeFile(LPCWSTR path, SCHEMEDATA& scheme)
 
 void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 {
+	CleanupMissingOriginalStagedThemes();
 	const bool redrawCombo = ::IsWindow(hCombobox);
 	if (redrawCombo)
 		SendMessageW(hCombobox, WM_SETREDRAW, FALSE, 0);
@@ -1231,13 +1609,46 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 	// Keep its last stock entry, not every row with the same display name:
 	// separate user-saved .theme files are added below by file identity.
 	std::vector<std::pair<std::wstring, int>> lastInstalledThemeEntries;
+	struct CustomManagerEntry
+	{
+		std::wstring name;
+		GUID id;
+		int index;
+	};
+	std::vector<CustomManagerEntry> visibleCustomThemeEntries;
 	for (int i = 0; i < count; ++i)
 	{
 		ComPtr<ITheme10> theme;
 		LPWSTR name = nullptr;
 		if (FAILED(pThemeManager->GetTheme(i, &theme)) || !theme ||
-			FAILED(theme->get_DisplayName(&name)) || !name ||
-			!IsInstalledSystemThemeName(name) || IsDefaultBlueTheme(name))
+			FAILED(theme->get_DisplayName(&name)) || !name)
+			continue;
+		if (!IsInstalledSystemThemeName(name) &&
+			!IsNonDeletableBuiltinTheme(name) &&
+			!IsUnsavedThemeEntry(name))
+		{
+			GUID id = {};
+			if (SUCCEEDED(theme->get_ThemeId(&id)))
+			{
+				bool found = false;
+				for (auto& entry : visibleCustomThemeEntries)
+				{
+					if (StrCmpIW(entry.name.c_str(), name) == 0 &&
+						IsEqualGUID(entry.id, id))
+					{
+						// The selected row wins; otherwise retain the latest
+						// manager entry for this exact name and identity.
+						if (entry.index != selectedIndex)
+							entry.index = i;
+						found = true;
+						break;
+					}
+				}
+				if (!found)
+					visibleCustomThemeEntries.push_back({ name, id, i });
+			}
+		}
+		if (!IsInstalledSystemThemeName(name) || IsDefaultBlueTheme(name))
 			continue;
 		bool found = false;
 		for (auto& entry : lastInstalledThemeEntries)
@@ -1344,6 +1755,27 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 			if (StrCmpIW(entry.first.c_str(), name) == 0 && entry.second != i)
 				earlierInstalledDuplicate = true;
 		if (earlierInstalledDuplicate) continue;
+		if (!IsInstalledSystemThemeName(name) &&
+			!IsNonDeletableBuiltinTheme(name))
+		{
+			GUID id = {};
+			if (SUCCEEDED(theme->get_ThemeId(&id)))
+			{
+				bool duplicate = false;
+				for (const auto& entry : visibleCustomThemeEntries)
+				{
+					if (StrCmpIW(entry.name.c_str(), name) == 0 &&
+						IsEqualGUID(entry.id, id) && entry.index != i)
+					{
+						duplicate = true;
+						LogThemeApplyDebug(L"Skipped duplicate manager theme %ls index=%d kept=%d",
+							name, i, entry.index);
+						break;
+					}
+				}
+				if (duplicate) continue;
+			}
+		}
 		bool unsavedTheme = IsUnsavedThemeEntry(name);
 		WCHAR savedDisplayName[MAX_PATH] = {};
 		if (unsavedTheme)
@@ -1401,6 +1833,33 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 		const bool zuneTheme = StrCmpIW(name, L"Zune") == 0;
 		const bool royaleTheme = StrCmpIW(name, L"Royale") == 0;
 		const bool royaleNoirTheme = StrCmpIW(name, L"Royale Noir") == 0;
+		// Theme Manager can reuse the same transient ThemeId for successive
+		// custom themes. Its saved-path registry entry then points at the latest
+		// file while an older manager row still bears the previous theme's name.
+		// Do not show that stale row alongside the real file-backed entry.
+		if (!nonDeletableBuiltin)
+		{
+			WCHAR registeredPath[MAX_PATH] = {};
+			if (GetRegisteredThemeFilePath(theme.Get(), registeredPath) &&
+				PathFileExistsW(registeredPath))
+			{
+				WCHAR registeredName[MAX_PATH] = {};
+				GetPrivateProfileStringW(L"Theme", L"DisplayName", L"",
+					registeredName, ARRAYSIZE(registeredName), registeredPath);
+				if (!registeredName[0])
+				{
+					StringCchCopyW(registeredName, ARRAYSIZE(registeredName),
+						PathFindFileNameW(registeredPath));
+					PathRemoveExtensionW(registeredName);
+				}
+				if (StrCmpIW(name, registeredName) != 0)
+				{
+					LogThemeApplyDebug(L"Skipped stale manager theme %ls mapped to %ls (%ls)",
+						name, registeredPath, registeredName);
+					continue;
+				}
+			}
+		}
 		int comboIndex = CB_ERR;
 		if (unsavedTheme)
 		{
@@ -1469,6 +1928,9 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 	auto addSavedThemeFile = [&](LPCWSTR candidate)
 	{
 		if (!IsAvailableThemeFile(candidate)) return;
+		// The source is the user's theme. The owned AppData file is an
+		// implementation detail, not a second theme in the combo box.
+		if (IsOwnedStagedThemePath(candidate)) return;
 		WCHAR savedName[MAX_PATH] = {};
 		GetPrivateProfileStringW(L"Theme", L"DisplayName", L"", savedName,
 			ARRAYSIZE(savedName), candidate);
@@ -1506,12 +1968,13 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 			}
 			if (existingPath[0] &&
 				(StrCmpIW(existingPath, candidate) == 0 ||
-					(StrCmpIW(existingName, savedName) == 0 &&
+					((itemData == THEME_COMBO_SAVED_FILE ||
+						StrCmpIW(existingName, savedName) == 0) &&
 						ThemeFilesHaveSameContents(existingPath, candidate))))
 			{
-				// A manager row can have an underlying "Unsaved Theme" name but
-				// still represent this saved file. Compare its visible name and
-				// contents; distinct themes with the same label remain listed.
+				// File-backed rows may already have a disambiguated label such as
+				// "tovm (tovm)". Deduplicate those by contents regardless of label;
+				// manager rows still need a matching visible name.
 				if (itemData == THEME_COMBO_SAVED_FILE)
 				{
 					if (selectedSavedThemePath[0] &&
@@ -1872,19 +2335,51 @@ void CThemeDlgProc::FinalizeClassicMetrics(const SCHEMEDATA& scheme, LPCWSTR sou
 	const int dpi = GetDpiForWindow(m_hWnd);
 	LogThemeApplyDebug(L"Final Classic metrics source=%ls", source);
 	LogClassicMetricsReadback(L"before-final-reapply", scheme, dpi);
-	const bool applied = ApplySchemeMetrics(&scheme, dpi);
-	LogThemeApplyDebug(L"Final Classic metrics ApplySchemeMetrics=%d error=%u",
-		applied, applied ? 0 : GetLastError());
-	LogClassicMetricsReadback(L"after-final-reapply", scheme, dpi);
-	if (applied)
+	if (ClassicMetricsAlreadyApplied(scheme, dpi))
+		LogThemeApplyDebug(L"Final Classic metrics already applied; skipped redundant write");
+	else
 	{
-		pendingMetricsReadback = scheme;
-		pendingMetricsReadbackValid = true;
-		if (!SetTimer(CLASSIC_METRICS_EARLY_TIMER, 1500) ||
-			!SetTimer(CLASSIC_METRICS_LATE_TIMER, 20000))
-			LogThemeApplyDebug(L"Could not schedule delayed Classic metrics readback error=%u",
-				GetLastError());
+		// A different live value still needs repair, but the synchronous SPI
+		// broadcast must never run on the property-sheet thread.
+		struct MetricsJob { SCHEMEDATA scheme; int dpi; };
+		MetricsJob* job = static_cast<MetricsJob*>(
+			HeapAlloc(GetProcessHeap(), 0, sizeof(MetricsJob)));
+		if (!job)
+			LogThemeApplyDebug(L"Could not allocate final Classic metrics worker");
+		else
+		{
+			job->scheme = scheme;
+			job->dpi = dpi;
+			HANDLE worker = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD
+			{
+				MetricsJob* work = static_cast<MetricsJob*>(param);
+				DWORD start = GetTickCount();
+				bool applied = ApplySchemeMetrics(&work->scheme, work->dpi);
+				DWORD error = applied ? ERROR_SUCCESS : GetLastError();
+				LogThemeApplyDebug(L"Final Classic metrics worker applied=%d error=%u elapsed=%u ms",
+					applied, error, GetTickCount() - start);
+				HeapFree(GetProcessHeap(), 0, work);
+				return 0;
+			}, job, 0, nullptr);
+			if (worker)
+			{
+				CloseHandle(worker);
+				LogThemeApplyDebug(L"Final Classic metrics repair queued on worker");
+			}
+			else
+			{
+				DWORD error = GetLastError();
+				HeapFree(GetProcessHeap(), 0, job);
+				LogThemeApplyDebug(L"Could not start final Classic metrics worker error=%u", error);
+			}
+		}
 	}
+	pendingMetricsReadback = scheme;
+	pendingMetricsReadbackValid = true;
+	if (!SetTimer(CLASSIC_METRICS_EARLY_TIMER, 1500) ||
+		!SetTimer(CLASSIC_METRICS_LATE_TIMER, 20000))
+		LogThemeApplyDebug(L"Could not schedule delayed Classic metrics readback error=%u",
+			GetLastError());
 }
 
 bool CThemeDlgProc::IsStartupThemeSnapshotSelected() const
@@ -2364,29 +2859,9 @@ BOOL CThemeDlgProc::OnSaveAs(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 		}
 	}
 	RememberThemeFileInHistory(destination);
-
-	DWORD stagedThemeCleanup = RemoveGeneratedThemeCopyWithoutConfirmation(destination);
-	if (stagedThemeCleanup != ERROR_SUCCESS)
-	{
-		WCHAR message[256] = {};
-		StringCchPrintfW(message, ARRAYSIZE(message),
-			LoadDeskString(IDS_THEME_STAGED_COPY_ERROR).c_str(),
-			stagedThemeCleanup);
-		::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
-		return 0;
-	}
-
-	ScopedThemeSaveCleanupMarker cleanupMarker(destination);
-	HRESULT applyResult = pThemeManager->AddAndSelectTheme(m_hWnd, destination,
-		THEMETOOL_APPLY_FLAG_IGNORE_BACKGROUND, 0);
-	if (FAILED(applyResult))
-	{
-		WCHAR message[256] = {};
-		StringCchPrintfW(message, ARRAYSIZE(message),
-			LoadDeskString(IDS_THEME_ADD_ERROR).c_str(), applyResult);
-		::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
-		return 0;
-	}
+	// Save As changes the identity of the current look, not the look itself.
+	// AddAndSelectTheme imports a second, same-named per-user copy and can
+	// recycle the previous one; keep the chosen file as the only saved copy.
 	LSTATUS publishStatus = PublishAppliedThemePath(destination);
 	if (publishStatus != ERROR_SUCCESS)
 	{
@@ -2682,22 +3157,35 @@ BOOL CThemeDlgProc::OnApply()
 			pendingThemeFilePath.c_str(), hasClassicFileScheme,
 			hasClassicFileScheme ? classicFileScheme.name : L"(none)");
 		selectedTheme->classicSchemeSourcePath = pendingThemeFilePath;
-		DWORD cleanupResult = RemoveGeneratedThemeCopyWithoutConfirmation(
+		// Registered themes already have a manager identity. External files
+		// use one owned, stable AppData copy; passing that exact path to the
+		// manager avoids its copy/delete/recycle import path.
+		int registeredIndex = FindRegisteredThemeIndexForFile(
 			pendingThemeFilePath.c_str());
-		if (cleanupResult != ERROR_SUCCESS)
+		HRESULT fileApplyResult = E_FAIL;
+		if (registeredIndex >= 0)
 		{
-			WCHAR message[256] = {};
-			StringCchPrintfW(message, ARRAYSIZE(message),
-				LoadDeskString(IDS_THEME_PREPARE_ERROR).c_str(), cleanupResult);
-		::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
-			return 0;
+			fileApplyResult = pThemeManager->SetCurrentTheme(m_hWnd,
+				registeredIndex, TRUE, apply_flags, 0);
+			LogThemeApplyDebug(L"Apply saved-file SetCurrentTheme index=%d result=0x%08X source=%ls",
+				registeredIndex, static_cast<unsigned int>(fileApplyResult),
+				pendingThemeFilePath.c_str());
 		}
-
-		ScopedThemeSaveCleanupMarker cleanupMarker(pendingThemeFilePath.c_str());
-		HRESULT fileApplyResult = pThemeManager->AddAndSelectTheme(m_hWnd,
-			pendingThemeFilePath.c_str(), apply_flags, 0);
-		LogThemeApplyDebug(L"Apply saved-file AddAndSelectTheme result=0x%08X source=%ls",
-			static_cast<unsigned int>(fileApplyResult), pendingThemeFilePath.c_str());
+		else
+		{
+			std::wstring staged;
+			if (!PrepareStableStagedTheme(pendingThemeFilePath.c_str(), staged))
+			{
+				::MessageBoxW(m_hWnd, LoadDeskString(IDS_THEME_COPY_BLOCKED).c_str(),
+					LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
+				return PSNRET_INVALID_NOCHANGEPAGE;
+			}
+			fileApplyResult = pThemeManager->AddAndSelectTheme(m_hWnd,
+				staged.c_str(), apply_flags, 0);
+			LogThemeApplyDebug(L"Apply saved-file stable stage result=0x%08X source=%ls staged=%ls",
+				static_cast<unsigned int>(fileApplyResult),
+				pendingThemeFilePath.c_str(), staged.c_str());
+		}
 		if (FAILED(fileApplyResult))
 		{
 			WCHAR message[256] = {};
@@ -2864,33 +3352,11 @@ BOOL CThemeDlgProc::OnApply()
 	bool classicSchemeApplied = false;
 	LogThemeApplyDebug(L"Manager scheme classic=%d savedScheme=%d source=%ls",
 		applyClassicTheme, hasSavedManagerClassicScheme, selectedSavedThemePath);
-	HRESULT applyResult = E_UNEXPECTED;
-	if (applyingSavedManagerTheme)
-	{
-		// Applying a registered saved theme by manager index can leave the
-		// generated Custom.theme as the current "Unsaved Theme" entry even when
-		// the user made no edits. Re-apply its source file through the same path
-		// used for file-backed rows so Theme Manager retains the saved identity.
-		DWORD cleanupResult = RemoveGeneratedThemeCopyWithoutConfirmation(
-			selectedSavedThemePath);
-		if (cleanupResult != ERROR_SUCCESS)
-		{
-			WCHAR message[256] = {};
-			StringCchPrintfW(message, ARRAYSIZE(message),
-				LoadDeskString(IDS_THEME_PREPARE_ERROR).c_str(), cleanupResult);
-			::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
-			return 0;
-		}
-		ScopedThemeSaveCleanupMarker cleanupMarker(selectedSavedThemePath);
-		applyResult = pThemeManager->AddAndSelectTheme(m_hWnd,
-			selectedSavedThemePath, apply_flags, 0);
-	}
-	else
-	{
-		applyResult = pThemeManager->SetCurrentTheme(m_hWnd, index, TRUE, apply_flags, 0);
-	}
-	LogThemeApplyDebug(L"Apply api=%ls result=0x%08X source=%ls",
-		applyingSavedManagerTheme ? L"AddAndSelectTheme" : L"SetCurrentTheme",
+	// The manager index already identifies an installed theme. Selecting it
+	// in place avoids importing/recycling a second saved-theme file.
+	HRESULT applyResult = pThemeManager->SetCurrentTheme(m_hWnd,
+		index, TRUE, apply_flags, 0);
+	LogThemeApplyDebug(L"Apply api=SetCurrentTheme result=0x%08X source=%ls",
 		static_cast<unsigned int>(applyResult), selectedSavedThemePath);
 	if (SUCCEEDED(applyResult))
 	{
