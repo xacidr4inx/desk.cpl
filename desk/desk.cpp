@@ -30,12 +30,46 @@ bool g_desktopThemeApplyPending = false;
 namespace
 {
 constexpr UINT WM_DESKN_CHECK_DEFERRED_THEME_DIRTY = WM_APP + 0x3A1;
+constexpr UINT WM_DESKN_ACTIVATE_EXISTING_SHEET = WM_APP + 0x3A2;
 constexpr int kApplyButtonId = 0x3021;
+constexpr UINT_PTR kRefreshStyledFrameTimer = 0xD35E;
+constexpr UINT_PTR kActivateExistingSheetTimer = 0xD35F;
+constexpr LPCWSTR kFrameRefreshAttempts = L"deskn.StyledFrameRefreshAttempts";
+constexpr LPCWSTR kDisplayPropertiesWindow =
+	L"deskn.DisplayProperties.8E7225C5-44CC-4A2E-9E75-DC5957E12D70";
 bool g_themeApplyInProgress = false;
 bool g_themeApplySawChangedNotification = false;
 bool g_ignorePostApplyDirtyNotification = false;
 DWORD g_applyCompletedTick = 0;
 DWORD g_lastInputTickAtApply = 0;
+
+BOOL CALLBACK FindExistingDisplayProperties(HWND hwnd, LPARAM context)
+{
+	if (!GetPropW(hwnd, kDisplayPropertiesWindow))
+		return TRUE;
+	*reinterpret_cast<HWND*>(context) = hwnd;
+	return FALSE;
+}
+
+bool ActivateExistingDisplayProperties()
+{
+	HWND existing = nullptr;
+	EnumWindows(FindExistingDisplayProperties,
+		reinterpret_cast<LPARAM>(&existing));
+	if (!existing || !IsWindow(existing))
+		return false;
+	DWORD processId = 0;
+	GetWindowThreadProcessId(existing, &processId);
+	if (processId)
+		AllowSetForegroundWindow(processId);
+	if (IsIconic(existing))
+		ShowWindowAsync(existing, SW_RESTORE);
+	SetForegroundWindow(existing);
+	// Control_RunDLL can take activation back as it exits. Ask the open sheet
+	// to retry after this second invocation has returned to the shell.
+	PostMessageW(existing, WM_DESKN_ACTIVATE_EXISTING_SHEET, 0, 0);
+	return true;
+}
 }
 
 const IID IID_IThemeManager2 = { 0xc1e8c83e, 0x845d, 0x4d95, {0x81, 0xdb, 0xe2, 0x83, 0xfd, 0xff, 0xc0, 0x00} };
@@ -80,12 +114,81 @@ static LRESULT CALLBACK PropertySheetThemeSubclass(
 {
 	if (message == WM_NCDESTROY)
 	{
+		KillTimer(hwnd, kRefreshStyledFrameTimer);
+		KillTimer(hwnd, kActivateExistingSheetTimer);
+		RemovePropW(hwnd, kFrameRefreshAttempts);
+		RemovePropW(hwnd, kDisplayPropertiesWindow);
 		RemoveWindowSubclass(hwnd, PropertySheetThemeSubclass, subclassId);
 		return DefSubclassProc(hwnd, message, wParam, lParam);
+	}
+	if (message == WM_DESKN_ACTIVATE_EXISTING_SHEET)
+	{
+		SetTimer(hwnd, kActivateExistingSheetTimer, 150, nullptr);
+		return 0;
+	}
+	if (message == WM_TIMER && wParam == kActivateExistingSheetTimer)
+	{
+		KillTimer(hwnd, kActivateExistingSheetTimer);
+		HWND target = GetLastActivePopup(hwnd);
+		if (!target || !IsWindowVisible(target))
+			target = hwnd;
+		if (IsIconic(target))
+			ShowWindow(target, SW_RESTORE);
+		SetForegroundWindow(target);
+		if (GetForegroundWindow() != target)
+		{
+			// Foreground locking can reject the request from rundll32. Raise
+			// the sheet in z-order without leaving it permanently topmost.
+			const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+			const bool wasTopmost =
+				(GetWindowLongPtrW(target, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+			SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0, flags);
+			if (!wasTopmost)
+				SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+			SetForegroundWindow(target);
+		}
+		return 0;
+	}
+	if (message == WM_TIMER && wParam == kRefreshStyledFrameTimer)
+	{
+		UINT_PTR attempts = reinterpret_cast<UINT_PTR>(
+			GetPropW(hwnd, kFrameRefreshAttempts));
+		if (!selectedTheme || selectedTheme->szMsstylePath == L"(classic)" ||
+			attempts >= 20)
+		{
+			KillTimer(hwnd, kRefreshStyledFrameTimer);
+			RemovePropW(hwnd, kFrameRefreshAttempts);
+			return 0;
+		}
+		SetPropW(hwnd, kFrameRefreshAttempts,
+			reinterpret_cast<HANDLE>(attempts + 1));
+
+		// The theme-switcher restores this process's theme hooks after the
+		// Theme Manager call returns. Re-theme the live property sheet only
+		// once a themed WINDOW handle can really be opened again.
+		if (GetThemeAppProperties() && IsAppThemed())
+		{
+			HTHEME theme = OpenThemeData(hwnd, L"WINDOW");
+			if (theme)
+			{
+				CloseThemeData(theme);
+				KillTimer(hwnd, kRefreshStyledFrameTimer);
+				RemovePropW(hwnd, kFrameRefreshAttempts);
+				SendMessageW(hwnd, WM_THEMECHANGED, 0, 0);
+				SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+					SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+					SWP_FRAMECHANGED);
+				RedrawWindow(hwnd, nullptr, nullptr,
+					RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+			}
+		}
+		return 0;
 	}
 
 	const bool applyButtonClicked = message == WM_COMMAND &&
 		LOWORD(wParam) == kApplyButtonId;
+	const bool wasClassicBeforeApply = applyButtonClicked &&
+		GetThemeAppProperties() == 0;
 	// Capture the selected theme before the property sheet synchronously sends
 	// PSN_APPLY to its pages. A page may refresh/reselect the combo during that
 	// processing, so inspecting it afterward can mistake a custom-theme Apply
@@ -94,6 +197,8 @@ static LRESULT CALLBACK PropertySheetThemeSubclass(
 		applyButtonClicked && IsMyCurrentThemeSelectedForApply();
 	if (applyButtonClicked)
 	{
+		KillTimer(hwnd, kRefreshStyledFrameTimer);
+		RemovePropW(hwnd, kFrameRefreshAttempts);
 		g_themeApplyInProgress = true;
 		g_themeApplySawChangedNotification = false;
 		g_ignorePostApplyDirtyNotification = false;
@@ -141,6 +246,10 @@ static LRESULT CALLBACK PropertySheetThemeSubclass(
 		!IsWindowEnabled(GetDlgItem(hwnd, kApplyButtonId));
 	if (applyCompleted)
 	{
+		if (wasClassicBeforeApply && selectedTheme &&
+			selectedTheme->szMsstylePath != L"(classic)" &&
+			SetTimer(hwnd, kRefreshStyledFrameTimer, 250, nullptr))
+			SetPropW(hwnd, kFrameRefreshAttempts, reinterpret_cast<HANDLE>(1));
 		// Discard deferred dirty checks posted by page refreshes during PSN_APPLY.
 		MSG pendingMessage = {};
 		while (PeekMessageW(&pendingMessage, hwnd,
@@ -176,8 +285,10 @@ static LRESULT CALLBACK PropertySheetThemeSubclass(
 		// property pages and their controls are children and may keep the prior
 		// visual-style handles until they receive it themselves.
 		EnumChildWindows(hwnd, ForwardThemeChangedToChild, 0);
+		// Let the page repaint after the apply message finishes. Erasing and
+		// updating immediately here exposes each intermediate Classic metric set.
 		RedrawWindow(hwnd, nullptr, nullptr,
-			RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+			RDW_INVALIDATE | RDW_ALLCHILDREN);
 	}
 	return result;
 }
@@ -185,7 +296,8 @@ static LRESULT CALLBACK PropertySheetThemeSubclass(
 int CALLBACK DeskCallback(HWND hwnd, UINT msg, LPARAM) {
 	if (msg == PSCB_INITIALIZED)
 	{
-		SetWindowSubclass(hwnd, PropertySheetThemeSubclass, 1, 0);
+		if (SetWindowSubclass(hwnd, PropertySheetThemeSubclass, 1, 0))
+			SetPropW(hwnd, kDisplayPropertiesWindow, reinterpret_cast<HANDLE>(1));
 		ApplySystemDialogFont(hwnd);
 	}
 	return 0;
@@ -209,7 +321,29 @@ void PropertySheetMoment(LPWSTR lpCmdLine)
 	Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
 
 	HRESULT hr = CoCreateInstance(CLSID_ThemeManager2, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pThemeManager));
-	pThemeManager->Init(ThemeInitNoFlags);
+	if (FAILED(hr) || !pThemeManager)
+	{
+		WCHAR message[160] = {};
+		StringCchPrintfW(message, ARRAYSIZE(message),
+			L"Theme Manager could not be initialized (0x%08X).",
+			static_cast<unsigned int>(hr));
+		MessageBoxW(nullptr, message, L"Display Properties", MB_OK | MB_ICONERROR);
+		Gdiplus::GdiplusShutdown(gdiplusToken);
+		return;
+	}
+	hr = pThemeManager->Init(ThemeInitNoFlags);
+	if (FAILED(hr))
+	{
+		WCHAR message[160] = {};
+		StringCchPrintfW(message, ARRAYSIZE(message),
+			L"Theme Manager failed to start (0x%08X).",
+			static_cast<unsigned int>(hr));
+		MessageBoxW(nullptr, message, L"Display Properties", MB_OK | MB_ICONERROR);
+		pThemeManager->Release();
+		pThemeManager = nullptr;
+		Gdiplus::GdiplusShutdown(gdiplusToken);
+		return;
+	}
 
 	hr = CoCreateInstance(CLSID_DesktopWallpaper, NULL, CLSCTX_ALL, IID_PPV_ARGS(&pDesktopWallpaper));
 	g_hThemeUI = LoadLibraryEx(L"themeui.dll", NULL, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -286,6 +420,44 @@ void PropertySheetMoment(LPWSTR lpCmdLine)
 	_TerminateProcess(pi);
 }
 
+unsigned __stdcall RunDisplayPropertiesSta(void* context)
+{
+	const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+	if (FAILED(hr))
+	{
+		WCHAR message[160] = {};
+		StringCchPrintfW(message, ARRAYSIZE(message),
+			L"Display Properties could not initialize COM (0x%08X).",
+			static_cast<unsigned int>(hr));
+		MessageBoxW(nullptr, message, L"Display Properties", MB_OK | MB_ICONERROR);
+		return 1;
+	}
+	LPWSTR commandLine = static_cast<LPWSTR>(context);
+	PropertySheetMoment(commandLine && commandLine[0] ? commandLine : nullptr);
+	CoUninitialize();
+	return 0;
+}
+
+// The desktop Properties verb calls this directly through rundll32. Its
+// calling thread may already be MTA, while Theme Manager requires STA.
+// Keep the export alive while a fresh STA thread owns the modal sheet.
+extern "C" void CALLBACK OpenDisplayPropertiesW(HWND, HINSTANCE, LPWSTR commandLine, int)
+{
+	if (ActivateExistingDisplayProperties())
+		return;
+	uintptr_t thread = _beginthreadex(nullptr, 0, RunDisplayPropertiesSta,
+		commandLine, 0, nullptr);
+	if (!thread)
+	{
+		MessageBoxW(nullptr, L"Display Properties could not start its UI thread.",
+			L"Display Properties", MB_OK | MB_ICONERROR);
+		return;
+	}
+	HANDLE handle = reinterpret_cast<HANDLE>(thread);
+	WaitForSingleObject(handle, INFINITE);
+	CloseHandle(handle);
+}
+
 extern "C" LONG APIENTRY CPlApplet(
 	HWND hwndCPL,			// handle of Control Panel window
 	UINT uMsg,				// message
@@ -315,7 +487,8 @@ extern "C" LONG APIENTRY CPlApplet(
 		lParam2 = 0L;
 		// fall through
 	case CPL_STARTWPARMS:
-		PropertySheetMoment((LPWSTR)lParam2);
+		if (!ActivateExistingDisplayProperties())
+			PropertySheetMoment((LPWSTR)lParam2);
 		return (LONG)TRUE;
 	}
 	return retCode;

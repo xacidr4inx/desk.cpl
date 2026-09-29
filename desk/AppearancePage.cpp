@@ -16,7 +16,6 @@ using namespace Microsoft::WRL::Details;
 #define HAS_EXTRA_LARGE 0x4
 #define CUSTOM_SCHEME 0x8
 
-static constexpr LPCWSTR APPEARANCE_XP_STYLE = L"(xp)";
 static constexpr LPCWSTR APPEARANCE_CLASSIC_STYLE = L"(classic)";
 static SCHEMEDATA browsedClassicScheme = {};
 
@@ -53,6 +52,44 @@ static bool ClassicMetricsMatch(const SCHEMEDATA* first, const SCHEMEDATA* secon
 		LogFontsMatch(a.lfMessageFont, b.lfMessageFont) &&
 		LogFontsMatch(first->lfIconTitle, second->lfIconTitle) &&
 		first->iPaddedBorderWidth == second->iPaddedBorderWidth;
+}
+
+// Read the values the next SPI call would actually write, including DPI
+// scaling. A redundant SPI_SETNONCLIENTMETRICS broadcasts a theme-sized
+// repaint even when the live metrics have not changed.
+static bool ClassicSchemeMetricsCurrentlyApplied(const SCHEMEDATA* scheme, int dpi)
+{
+	if (!scheme || dpi <= 0) return false;
+	SCHEMEDATA expected = *scheme;
+	expected.iPaddedBorderWidth = MulDiv(scheme->iPaddedBorderWidth, dpi, 96);
+	if (!scheme->dpiScaled)
+	{
+		ScaleNonClientMetrics(expected.ncm, dpi);
+		ScaleLogFont(expected.ncm.lfCaptionFont, dpi);
+		ScaleLogFont(expected.ncm.lfSmCaptionFont, dpi);
+		ScaleLogFont(expected.ncm.lfMenuFont, dpi);
+		ScaleLogFont(expected.ncm.lfStatusFont, dpi);
+		ScaleLogFont(expected.ncm.lfMessageFont, dpi);
+	}
+	else
+	{
+		ScaleLogFont(expected.ncm.lfCaptionFont, dpi);
+		ScaleLogFont(expected.ncm.lfSmCaptionFont, dpi);
+		ScaleLogFont(expected.ncm.lfMenuFont, dpi);
+		ScaleLogFont(expected.ncm.lfStatusFont, dpi);
+		ScaleLogFont(expected.ncm.lfMessageFont, dpi);
+	}
+	ScaleLogFont(expected.lfIconTitle, dpi);
+
+	SCHEMEDATA live = {};
+	NONCLIENTMETRICSW metrics = { sizeof(metrics) };
+	if (!SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0) ||
+		!SystemParametersInfoW(SPI_GETICONTITLELOGFONT, sizeof(live.lfIconTitle),
+			&live.lfIconTitle, 0))
+		return false;
+	memcpy(&live.ncm, &metrics, sizeof(live.ncm));
+	live.iPaddedBorderWidth = metrics.iPaddedBorderWidth;
+	return ClassicMetricsMatch(&expected, &live);
 }
 
 // The Windows Standard registry value can have a localized name or slightly
@@ -245,6 +282,35 @@ static bool MsstylePathsMatch(LPCWSTR firstPath, LPCWSTR secondPath)
 		StrCmpIW(firstResolved, secondResolved) == 0;
 }
 
+static std::wstring MsstyleGroupPath(LPCWSTR stylePath)
+{
+	WCHAR resolved[MAX_PATH] = {};
+	if (!ResolveMsstylePath(stylePath, resolved) || !PathRemoveFileSpecW(resolved))
+		return {};
+	return resolved;
+}
+
+static bool MsstyleBelongsToGroup(LPCWSTR stylePath, LPCWSTR groupPath)
+{
+	if (!groupPath || !groupPath[0]) return false;
+	std::wstring parent = MsstyleGroupPath(stylePath);
+	return !parent.empty() && StrCmpIW(parent.c_str(), groupPath) == 0;
+}
+
+static std::wstring MsstyleGroupLabel(LPCWSTR groupPath)
+{
+	LPCWSTR folder = PathFindFileNameW(groupPath);
+	if (StrCmpIW(folder, LoadDeskString(IDS_XP_STYLE_FOLDER).c_str()) == 0)
+		return LoadDeskString(IDS_WINDOWS_XP_STYLE);
+	if (StrCmpIW(folder, LoadDeskString(IDS_ROYALE_STYLE_FOLDER).c_str()) == 0)
+		return LoadDeskString(IDS_ROYALE_STYLE);
+	WCHAR label[MAX_PATH] = {};
+	std::wstring format = LoadDeskString(IDS_STYLE_FORMAT);
+	if (FAILED(StringCchPrintfW(label, ARRAYSIZE(label), format.c_str(), folder)))
+		return folder;
+	return label;
+}
+
 static HANDLE LoadCurrentMsstyleVariant(LPCWSTR stylePath)
 {
 	WCHAR liveStylePath[MAX_PATH] = {};
@@ -260,22 +326,6 @@ static HANDLE LoadCurrentMsstyleVariant(LPCWSTR stylePath)
 			return LoadThemeFromFilePath(resolvedLiveStylePath, liveColorName, liveSizeName);
 	}
 	return LoadThemeFromFilePath(stylePath);
-}
-
-static LPCWSTR GetBuiltInMsstyleDisplayName(LPCWSTR stylePath)
-{
-	LPCWSTR fileName = PathFindFileNameW(stylePath);
-	static const std::wstring names[] = {
-		LoadDeskString(IDS_DEFAULT_BLUE_STYLE), LoadDeskString(IDS_ZUNE_STYLE),
-		LoadDeskString(IDS_ROYALE_STYLE), LoadDeskString(IDS_ROYALE_NOIR_STYLE),
-		LoadDeskString(IDS_EMBEDDED_STYLE)
-	};
-	if (StrCmpIW(fileName, L"Luna.msstyles") == 0) return names[0].c_str();
-	if (StrCmpIW(fileName, L"Zune.msstyles") == 0) return names[1].c_str();
-	if (StrCmpIW(fileName, L"Royale.msstyles") == 0) return names[2].c_str();
-	if (StrCmpIW(fileName, L"RoyaleNoir.msstyles") == 0) return names[3].c_str();
-	if (StrCmpIW(fileName, L"Embedded.msstyles") == 0) return names[4].c_str();
-	return nullptr;
 }
 
 static HRESULT ApplyMsstyleWithoutChangingWallpaper(HWND hwnd, LPCWSTR stylePath)
@@ -529,11 +579,23 @@ static bool ApplyClassicSchemePalette(HWND hwnd, HWND colorCombo,
 		::MessageBoxW(hwnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
 	}
 
-	int elements[MAX_COLORS] = {};
+	bool colorsDiffer = false;
 	for (int color = 0; color < MAX_COLORS; ++color)
-		elements[color] = color;
-	const bool colorsApplied = SetSysColors(MAX_COLORS, elements, scheme->rgb) != FALSE;
-	LogClassicSchemeApply(L"after SetSysColors", colorCombo, scheme);
+		if ((GetSysColor(color) & 0x00FFFFFF) !=
+			(scheme->rgb[color] & 0x00FFFFFF))
+		{
+			colorsDiffer = true;
+			break;
+		}
+	bool colorsApplied = true;
+	if (colorsDiffer)
+	{
+		int elements[MAX_COLORS] = {};
+		for (int color = 0; color < MAX_COLORS; ++color)
+			elements[color] = color;
+		colorsApplied = SetSysColors(MAX_COLORS, elements, scheme->rgb) != FALSE;
+		LogClassicSchemeApply(L"after SetSysColors", colorCombo, scheme);
+	}
 	return colorSaveStatus == ERROR_SUCCESS && schemeSaveStatus == ERROR_SUCCESS && colorsApplied;
 }
 
@@ -642,10 +704,24 @@ BOOL CAppearanceDlgProc::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, B
 		RegCloseKey(key);
 	}
 
+	for (LPWSTR style : msstyle)
+	{
+		std::wstring groupPath = MsstyleGroupPath(style);
+		if (groupPath.empty()) continue;
+		if (std::find_if(msstyleGroups.begin(), msstyleGroups.end(),
+			[&groupPath](const std::wstring& existing) {
+				return StrCmpIW(existing.c_str(), groupPath.c_str()) == 0;
+			}) == msstyleGroups.end())
+			msstyleGroups.push_back(std::move(groupPath));
+	}
+	for (const std::wstring& groupPath : msstyleGroups)
+	{
+		std::wstring label = MsstyleGroupLabel(groupPath.c_str());
+		int groupIndex = ComboBox_AddString(hThemesCombobox, label.c_str());
+		ComboBox_SetItemData(hThemesCombobox, groupIndex,
+			(LPARAM)groupPath.c_str());
+	}
 	int index = ComboBox_AddString(hThemesCombobox,
-		LoadDeskString(IDS_WINDOWS_XP_STYLE).c_str());
-	ComboBox_SetItemData(hThemesCombobox, index, (LPARAM)APPEARANCE_XP_STYLE);
-	index = ComboBox_AddString(hThemesCombobox,
 		LoadDeskString(IDS_WINDOWS_CLASSIC_STYLE).c_str());
 	ComboBox_SetItemData(hThemesCombobox, index, (LPARAM)APPEARANCE_CLASSIC_STYLE);
 	int selindex = _FindCurrentIndex();
@@ -707,7 +783,9 @@ LRESULT CAppearanceDlgProc::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled)
 
 	if (!IsClassicSchemeCurrentlyApplied(scheme))
 		ApplyClassicSchemePalette(m_hWnd, hColorCombobox, scheme, false);
-	ApplySchemeMetrics(scheme, GetDpiForWindow(m_hWnd));
+	const int dpi = GetDpiForWindow(m_hWnd);
+	if (!ClassicSchemeMetricsCurrentlyApplied(scheme, dpi))
+		ApplySchemeMetrics(scheme, dpi);
 
 	if (++classicPaletteRefreshAttempts >= 4)
 	{
@@ -824,22 +902,28 @@ BOOL CAppearanceDlgProc::OnComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& b
 
 	int i = ComboBox_GetCurSel(hThemesCombobox);
 	LPWSTR styleKind = (LPWSTR)ComboBox_GetItemData(hThemesCombobox, i);
-	if (StrCmpI(styleKind, APPEARANCE_XP_STYLE) == 0)
+	if (styleKind && StrCmpI(styleKind, APPEARANCE_CLASSIC_STYLE) != 0)
 	{
-		if (StrCmpI(selectedTheme->szMsstylePath.c_str(), APPEARANCE_CLASSIC_STYLE) == 0)
+		LPWSTR preferredStyle = nullptr;
+		LPWSTR defaultStyle = nullptr;
+		for (LPWSTR style : msstyle)
 		{
-			LPWSTR preferredStyle = nullptr;
-			for (LPWSTR style : msstyle)
+			if (!MsstyleBelongsToGroup(style, styleKind)) continue;
+			if (!preferredStyle) preferredStyle = style;
+			WCHAR stem[MAX_PATH] = {};
+			StringCchCopyW(stem, ARRAYSIZE(stem), PathFindFileNameW(style));
+			PathRemoveExtensionW(stem);
+			if (StrCmpIW(stem, PathFindFileNameW(styleKind)) == 0)
+				defaultStyle = style;
+			if (MsstylePathsMatch(style, selectedTheme->szMsstylePath.c_str()))
 			{
-				if (!preferredStyle) preferredStyle = style;
-				if (StrCmpI(PathFindFileNameW(style), L"Luna.msstyles") == 0)
-				{
-					preferredStyle = style;
-					break;
-				}
+				preferredStyle = style;
+				defaultStyle = nullptr;
+				break;
 			}
-			if (preferredStyle) selectedTheme->szMsstylePath = preferredStyle;
 		}
+		if (defaultStyle) preferredStyle = defaultStyle;
+		if (preferredStyle) selectedTheme->szMsstylePath = preferredStyle;
 		if (selectedTheme->selectedScheme && selectedTheme->selectedScheme != currentRegistryScheme &&
 			selectedTheme->selectedScheme->variant == CUSTOM_SCHEME)
 			free(selectedTheme->selectedScheme);
@@ -878,7 +962,7 @@ BOOL CAppearanceDlgProc::OnClrComboboxChange(UINT code, UINT id, HWND hWnd, BOOL
 	advancedSchemeBaselineValid = false;
 	int i = ComboBox_GetCurSel(hThemesCombobox);
 	LPWSTR styleKind = (LPWSTR)ComboBox_GetItemData(hThemesCombobox, i);
-	if (StrCmpI(styleKind, APPEARANCE_XP_STYLE) == 0)
+	if (styleKind && StrCmpI(styleKind, APPEARANCE_CLASSIC_STYLE) != 0)
 	{
 		int schemeIndex = ComboBox_GetCurSel(hColorCombobox);
 		LPWSTR style = schemeIndex < 0 ? nullptr :
@@ -1004,7 +1088,8 @@ BOOL CAppearanceDlgProc::OnSetActive()
 			const bool classic = StrCmpI(selectedTheme->szMsstylePath.c_str(),
 				APPEARANCE_CLASSIC_STYLE) == 0;
 			if ((classic && StrCmpI(data, APPEARANCE_CLASSIC_STYLE) == 0) ||
-				(!classic && StrCmpI(data, APPEARANCE_XP_STYLE) == 0))
+				(!classic && MsstyleBelongsToGroup(
+					selectedTheme->szMsstylePath.c_str(), data)))
 			{
 				ComboBox_SetCurSel(hThemesCombobox, i);
 				_UpdateColorBox(data);
@@ -1097,7 +1182,6 @@ BOOL CAppearanceDlgProc::OnApply()
 	// palette and metrics only when Classic is selected.
 	if (classicScheme && (!applyXpStyle || advancedAppearancePending))
 	{ 
-		ApplySchemeMetrics(classicScheme, GetDpiForWindow(m_hWnd));
 		// Keep named Classic palettes in their own registry-backed scheme. For
 		// msstyles, classicScheme also carries the style's metrics, but applying
 		// its full system-color array would replace the selected msstyles palette.
@@ -1194,13 +1278,15 @@ BOOL CAppearanceDlgProc::OnApply()
 			}
 		}
 	}
-	// Switching from an msstyle applies the Classic theme through Theme Manager,
-	// whose subsequent refresh can restore its cached non-client metrics. Reapply
-	// the selected Classic metrics after all Theme Manager work is finished so
-	// the first Apply leaves the chosen values active (Classic-to-Classic skips
-	// that refresh, which is why a second Apply previously appeared to fix it).
+	// Apply the selected metrics once, after Theme Manager has finished. An
+	// earlier write was immediately followed by another after Refresh, causing
+	// repeated system-wide broadcasts and visible property-sheet repaints.
 	if (!applyXpStyle && classicScheme)
-		ApplySchemeMetrics(classicScheme, GetDpiForWindow(m_hWnd));
+	{
+		const int dpi = GetDpiForWindow(m_hWnd);
+		if (!classicToClassic || !ClassicSchemeMetricsCurrentlyApplied(classicScheme, dpi))
+			ApplySchemeMetrics(classicScheme, dpi);
+	}
 	else if (applyXpStyle && selectedTheme->selectedScheme)
 		ApplySchemeMetrics(selectedTheme->selectedScheme, GetDpiForWindow(m_hWnd));
 
@@ -1239,7 +1325,7 @@ BOOL CAppearanceDlgProc::OnApply()
 void CAppearanceDlgProc::_UpdateColorBox(LPWSTR data)
 {
 	ComboBox_ResetContent(hColorCombobox);
-	if (StrCmpI(data, APPEARANCE_XP_STYLE) == 0)
+	if (data && StrCmpI(data, APPEARANCE_CLASSIC_STYLE) != 0)
 	{
 		LPCWSTR preferredStylePath = selectedTheme->szMsstylePath.c_str();
 		WCHAR resolvedLiveStylePath[MAX_PATH] = {};
@@ -1251,34 +1337,36 @@ void CAppearanceDlgProc::_UpdateColorBox(LPWSTR data)
 				liveColorName, ARRAYSIZE(liveColorName),
 				liveSizeName, ARRAYSIZE(liveSizeName))) &&
 			ResolveMsstylePath(liveStylePath, resolvedLiveStylePath) &&
-			StrCmpIW(PathFindExtensionW(resolvedLiveStylePath), L".msstyles") == 0)
+			StrCmpIW(PathFindExtensionW(resolvedLiveStylePath), L".msstyles") == 0 &&
+			MsstyleBelongsToGroup(resolvedLiveStylePath, data))
 		{
 			preferredStylePath = resolvedLiveStylePath;
 			selectedTheme->szMsstylePath = resolvedLiveStylePath;
 		}
 		for (LPWSTR style : msstyle)
 		{
+			if (!MsstyleBelongsToGroup(style, data)) continue;
 			WCHAR name[MAX_PATH] = {};
-			HMODULE hStyle = LoadLibraryExW(style, nullptr,
-				LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-			if (hStyle)
-			{
-				LoadStringW(hStyle, 101, name, ARRAYSIZE(name));
-				FreeLibrary(hStyle);
-			}
-			if (!name[0])
-			{
-				StringCchCopyW(name, ARRAYSIZE(name), PathFindFileNameW(style));
-				PathRemoveExtensionW(name);
-			}
-			if (LPCWSTR builtInName = GetBuiltInMsstyleDisplayName(style))
-				StringCchCopyW(name, ARRAYSIZE(name), builtInName);
+			WCHAR styleName[MAX_PATH] = {};
+			StringCchCopyW(styleName, ARRAYSIZE(styleName), PathFindFileNameW(style));
+			PathRemoveExtensionW(styleName);
+			if (StrCmpIW(styleName, L"Luna") == 0)
+				StringCchCopyW(name, ARRAYSIZE(name),
+					LoadDeskString(IDS_LUNA_STYLE).c_str());
+			else if (StrCmpIW(styleName, L"Olive") == 0)
+				StringCchCopyW(name, ARRAYSIZE(name),
+					LoadDeskString(IDS_OLIVE_STYLE).c_str());
+			else if (StrCmpIW(styleName, L"Silver") == 0)
+				StringCchCopyW(name, ARRAYSIZE(name),
+					LoadDeskString(IDS_SILVER_STYLE).c_str());
+			else
+				StringCchCopyW(name, ARRAYSIZE(name), styleName);
 			int item = ComboBox_AddString(hColorCombobox, name);
 			ComboBox_SetItemData(hColorCombobox, item, (LPARAM)style);
 		}
 		// This combo uses CBS_SORT, so adding a later item can shift the index
-		// returned for an earlier match (e.g. Default [blue] sorts ahead of
-		// Embedded Style). Resolve the preferred path against the final list.
+		// returned for an earlier match after sorting. Resolve the preferred
+		// path against the final list.
 		for (int item = 0; item < ComboBox_GetCount(hColorCombobox); ++item)
 		{
 			LRESULT itemData = ComboBox_GetItemData(hColorCombobox, item);
@@ -1667,12 +1755,13 @@ void CAppearanceDlgProc::_FixColorBox()
 int CAppearanceDlgProc::_FindCurrentIndex()
 {
 	const bool classicSelected = selectedTheme->szMsstylePath == APPEARANCE_CLASSIC_STYLE;
-	const LPCWSTR wanted = classicSelected
-		? APPEARANCE_CLASSIC_STYLE : APPEARANCE_XP_STYLE;
 	for (int i = 0; i < ComboBox_GetCount(hThemesCombobox); ++i)
 	{
 		LPCWSTR data = (LPCWSTR)ComboBox_GetItemData(hThemesCombobox, i);
-		if (StrCmpI(data, wanted) == 0) return i;
+		if ((classicSelected && StrCmpI(data, APPEARANCE_CLASSIC_STYLE) == 0) ||
+			(!classicSelected && MsstyleBelongsToGroup(
+				selectedTheme->szMsstylePath.c_str(), data)))
+			return i;
 	}
 	return -1;
 }

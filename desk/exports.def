@@ -4,3 +4,4 @@ LIBRARY
 
 EXPORTS
 	CPlApplet
+	OpenDisplayPropertiesW

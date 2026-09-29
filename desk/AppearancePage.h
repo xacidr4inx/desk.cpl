@@ -51,6 +51,7 @@ private:
 	HWND hPreviewWnd;
 	SIZE size;
 	std::vector<LPWSTR> msstyle;
+	std::vector<std::wstring> msstyleGroups;
 	Microsoft::WRL::ComPtr<IWindowPreview> pWndPreview;
 	SCHEMEDATA* schemeMap = NULL;
 	SCHEMEDATA* currentRegistryScheme = NULL;

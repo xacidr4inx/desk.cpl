@@ -77,6 +77,65 @@ void LogThemeApplyDebug(LPCWSTR format, ...)
 	CloseHandle(file);
 }
 
+// This Theme Manager build does not maintain Themes\CurrentTheme. Publish the
+// file it just applied so the theme-switcher can distinguish a styleless
+// Classic theme from the outgoing msstyles still reported by uxtheme.
+LSTATUS PublishAppliedThemePath(LPCWSTR path)
+{
+	if (!path || !path[0] || !PathFileExistsW(path))
+		return ERROR_FILE_NOT_FOUND;
+	HKEY key = nullptr;
+	LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER,
+		L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes", 0,
+		nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr);
+	if (status == ERROR_SUCCESS)
+	{
+		status = RegSetValueExW(key, L"CurrentTheme", 0, REG_SZ,
+			reinterpret_cast<const BYTE*>(path),
+			static_cast<DWORD>((lstrlenW(path) + 1) * sizeof(WCHAR)));
+		RegCloseKey(key);
+	}
+	LogThemeApplyDebug(L"Published CurrentTheme=%ls status=%ld", path, status);
+	return status;
+}
+
+LSTATUS ClearStaleClassicThemePath()
+{
+	WCHAR current[MAX_PATH] = {};
+	DWORD cb = sizeof(current);
+	if (RegGetValueW(HKEY_CURRENT_USER,
+		L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes",
+		L"CurrentTheme", RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+		nullptr, current, &cb) != ERROR_SUCCESS)
+		return ERROR_SUCCESS;
+	WCHAR style[MAX_PATH] = {};
+	if (GetPrivateProfileStringW(L"VisualStyles", L"Path", L"", style,
+		ARRAYSIZE(style), current) && style[0])
+		return ERROR_SUCCESS;
+	HKEY key = nullptr;
+	LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER,
+		L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes", 0,
+		KEY_SET_VALUE, &key);
+	if (status == ERROR_SUCCESS)
+	{
+		status = RegDeleteValueW(key, L"CurrentTheme");
+		RegCloseKey(key);
+	}
+	LogThemeApplyDebug(L"Cleared stale Classic CurrentTheme=%ls status=%ld",
+		current, status);
+	return status;
+}
+
+bool GetWindowsClassicThemePath(WCHAR (&path)[MAX_PATH])
+{
+	WCHAR windows[MAX_PATH] = {};
+	UINT length = GetWindowsDirectoryW(windows, ARRAYSIZE(windows));
+	return length && length < ARRAYSIZE(windows) &&
+		SUCCEEDED(StringCchPrintfW(path, ARRAYSIZE(path),
+			L"%s\\Resources\\Themes\\Windows Classic.theme", windows)) &&
+		PathFileExistsW(path);
+}
+
 void LogClassicMetricsReadback(LPCWSTR stage, const SCHEMEDATA& scheme, int dpi)
 {
 	NONCLIENTMETRICSW expected = {};
@@ -1167,6 +1226,47 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 		defaultThemeIndex >= 0 && defaultThemeIndex < count;
 	LogThemeApplyDebug(L"Populate default theme result=0x%08X index=%d set=%d",
 		defaultThemeResult, defaultThemeIndex, defaultThemeIsSet);
+	// Theme Manager can enumerate the same installed theme twice after an
+	// apply (for example, Royale as both a current entry and a stock entry).
+	// Keep its last stock entry, not every row with the same display name:
+	// separate user-saved .theme files are added below by file identity.
+	std::vector<std::pair<std::wstring, int>> lastInstalledThemeEntries;
+	for (int i = 0; i < count; ++i)
+	{
+		ComPtr<ITheme10> theme;
+		LPWSTR name = nullptr;
+		if (FAILED(pThemeManager->GetTheme(i, &theme)) || !theme ||
+			FAILED(theme->get_DisplayName(&name)) || !name ||
+			!IsInstalledSystemThemeName(name) || IsDefaultBlueTheme(name))
+			continue;
+		bool found = false;
+		for (auto& entry : lastInstalledThemeEntries)
+		{
+			if (StrCmpIW(entry.first.c_str(), name) == 0)
+			{
+				entry.second = i;
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			lastInstalledThemeEntries.emplace_back(name, i);
+	}
+	int selectedVisibleManagerIndex = selectedIndex;
+	if (selectedIndex >= 0 && selectedIndex < count)
+	{
+		ComPtr<ITheme10> selectedManagerTheme;
+		LPWSTR selectedName = nullptr;
+		if (SUCCEEDED(pThemeManager->GetTheme(selectedIndex, &selectedManagerTheme)) &&
+			selectedManagerTheme &&
+			SUCCEEDED(selectedManagerTheme->get_DisplayName(&selectedName)) &&
+			selectedName)
+		{
+			for (const auto& entry : lastInstalledThemeEntries)
+				if (StrCmpIW(entry.first.c_str(), selectedName) == 0)
+					selectedVisibleManagerIndex = entry.second;
+		}
+	}
 	if (startupThemeIdValid)
 	{
 		for (int i = 0; i < count; ++i)
@@ -1239,6 +1339,11 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 				IsReservedCurrentThemeFile(registeredThemePath)))
 			continue;
 		if (IsHiddenBuiltinTheme(name)) continue;
+		bool earlierInstalledDuplicate = false;
+		for (const auto& entry : lastInstalledThemeEntries)
+			if (StrCmpIW(entry.first.c_str(), name) == 0 && entry.second != i)
+				earlierInstalledDuplicate = true;
+		if (earlierInstalledDuplicate) continue;
 		bool unsavedTheme = IsUnsavedThemeEntry(name);
 		WCHAR savedDisplayName[MAX_PATH] = {};
 		if (unsavedTheme)
@@ -1355,7 +1460,7 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 					continue;
 				}
 			}
-			if (i == selectedIndex) selectedComboIndex = comboIndex;
+			if (i == selectedVisibleManagerIndex) selectedComboIndex = comboIndex;
 		}
 	}
 
@@ -2282,6 +2387,17 @@ BOOL CThemeDlgProc::OnSaveAs(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 		::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
 		return 0;
 	}
+	LSTATUS publishStatus = PublishAppliedThemePath(destination);
+	if (publishStatus != ERROR_SUCCESS)
+	{
+		WCHAR message[256] = {};
+		StringCchPrintfW(message, ARRAYSIZE(message),
+			LoadDeskString(IDS_THEME_APPLY_ERROR).c_str(),
+			HRESULT_FROM_WIN32(publishStatus));
+		::MessageBoxW(m_hWnd, message,
+			LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
+		return 0;
+	}
 
 	pThemeManager->Refresh();
 	int currentTheme = 0;
@@ -2307,11 +2423,12 @@ BOOL CThemeDlgProc::OnSaveAs(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 		UpdateDeleteButton();
 		auto activeTheme = std::make_unique<CTheme>(currentITheme);
 		LPWSTR activeStylePath = nullptr;
-		if (SUCCEEDED(activeTheme->get_VisualStyle(&activeStylePath)) &&
+		if (!saveCustomClassicScheme &&
+			SUCCEEDED(activeTheme->get_VisualStyle(&activeStylePath)) &&
 			activeStylePath && PathFileExistsW(activeStylePath))
 			selectedTheme->szMsstylePath = activeStylePath;
 	}
-	if (saveCustomClassicScheme && selectedTheme->szMsstylePath == L"(classic)")
+	if (saveCustomClassicScheme)
 	{
 		LSTATUS schemeStatus = ApplyClassicScheme(m_hWnd,
 			GetDpiForWindow(m_hWnd), &classicSchemeCopy, destination);
@@ -2553,6 +2670,10 @@ BOOL CThemeDlgProc::OnApply()
 
 	if (applySavedThemeFile)
 	{
+		WCHAR requestedStylePath[MAX_PATH] = {};
+		const bool requestedClassicStyle = !ReadThemeFilePath(
+			pendingThemeFilePath.c_str(), L"VisualStyles", L"Path",
+			requestedStylePath);
 		SCHEMEDATA classicFileScheme = {};
 		const bool hasClassicFileScheme = LoadClassicSchemeFromThemeFile(
 			pendingThemeFilePath.c_str(), classicFileScheme);
@@ -2585,6 +2706,17 @@ BOOL CThemeDlgProc::OnApply()
 			::MessageBoxW(m_hWnd, message, LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
 			return 0;
 		}
+		LSTATUS publishStatus = PublishAppliedThemePath(pendingThemeFilePath.c_str());
+		if (publishStatus != ERROR_SUCCESS)
+		{
+			WCHAR message[256] = {};
+			StringCchPrintfW(message, ARRAYSIZE(message),
+				LoadDeskString(IDS_THEME_APPLY_ERROR).c_str(),
+				HRESULT_FROM_WIN32(publishStatus));
+			::MessageBoxW(m_hWnd, message,
+				LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
+			return 0;
+		}
 		startupSnapshotIsCurrent = applyingStartupSnapshot;
 
 		pThemeManager->Refresh();
@@ -2614,10 +2746,14 @@ BOOL CThemeDlgProc::OnApply()
 
 				LPWSTR activeStylePath = nullptr;
 				activeTheme->get_VisualStyle(&activeStylePath);
-				HANDLE previewTheme = activeStylePath && PathFileExistsW(activeStylePath)
+				// Theme Manager can retain the outgoing msstyle after applying a
+				// styleless .theme file. The selected file, not that stale active
+				// style, decides whether this is a Classic scheme apply.
+				HANDLE previewTheme = !requestedClassicStyle && activeStylePath && PathFileExistsW(activeStylePath)
 					? LoadThemeFromFilePath(activeStylePath) : nullptr;
-				LogThemeApplyDebug(L"Saved-file active style=%ls previewTheme=%d",
-					activeStylePath ? activeStylePath : L"(none)", previewTheme != nullptr);
+				LogThemeApplyDebug(L"Saved-file requested Classic=%d active style=%ls previewTheme=%d",
+					requestedClassicStyle, activeStylePath ? activeStylePath : L"(none)",
+					previewTheme != nullptr);
 				if (previewTheme)
 				{
 					selectedTheme->szMsstylePath = activeStylePath;
@@ -2756,6 +2892,28 @@ BOOL CThemeDlgProc::OnApply()
 	LogThemeApplyDebug(L"Apply api=%ls result=0x%08X source=%ls",
 		applyingSavedManagerTheme ? L"AddAndSelectTheme" : L"SetCurrentTheme",
 		static_cast<unsigned int>(applyResult), selectedSavedThemePath);
+	if (SUCCEEDED(applyResult))
+	{
+		WCHAR classicPath[MAX_PATH] = {};
+		LSTATUS publishStatus = ERROR_SUCCESS;
+		if (applyingSavedManagerTheme)
+			publishStatus = PublishAppliedThemePath(selectedSavedThemePath);
+		else if (applyClassicTheme)
+			publishStatus = GetWindowsClassicThemePath(classicPath)
+				? PublishAppliedThemePath(classicPath) : ERROR_FILE_NOT_FOUND;
+		else
+			publishStatus = ClearStaleClassicThemePath();
+		if (publishStatus != ERROR_SUCCESS)
+		{
+			WCHAR message[256] = {};
+			StringCchPrintfW(message, ARRAYSIZE(message),
+				LoadDeskString(IDS_THEME_APPLY_ERROR).c_str(),
+				HRESULT_FROM_WIN32(publishStatus));
+			::MessageBoxW(m_hWnd, message,
+				LoadDeskString(IDS_DISPLAY_PROPERTIES).c_str(), MB_OK | MB_ICONERROR);
+			return 0;
+		}
+	}
 	if (SUCCEEDED(applyResult))
 		startupSnapshotIsCurrent = false;
 	if (SUCCEEDED(applyResult) && applyClassicTheme)

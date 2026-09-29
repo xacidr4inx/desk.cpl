@@ -42,9 +42,22 @@ void ApplySystemDialogFont(HWND hwnd)
 			&metrics, 0))
 		return;
 
+	HFONT previous = static_cast<HFONT>(GetPropW(hwnd, kDialogFontProperty));
+	LOGFONTW previousLogFont = {};
+	if (previous && GetObjectW(previous, sizeof(previousLogFont),
+		&previousLogFont) == sizeof(previousLogFont) &&
+		memcmp(&previousLogFont, &metrics.lfMessageFont,
+			offsetof(LOGFONTW, lfFaceName)) == 0 &&
+		_wcsicmp(previousLogFont.lfFaceName,
+			metrics.lfMessageFont.lfFaceName) == 0)
+	{
+		// Theme/metric broadcasts can repeat without changing the dialog
+		// font. Re-sending WM_SETFONT(TRUE) to every child visibly repaints it.
+		return;
+	}
+
 	HFONT font = CreateFontIndirectW(&metrics.lfMessageFont);
 	if (!font) return;
-	HFONT previous = static_cast<HFONT>(GetPropW(hwnd, kDialogFontProperty));
 	if (!SetPropW(hwnd, kDialogFontProperty, font))
 	{
 		DeleteObject(font);

@@ -1,0 +1,8 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\DesktopBackground\Shell\Item0]
+"MUIVerb"="P&roperties"
+"Position"="bottom"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\DesktopBackground\Shell\Item0\command]
+@="C:\\Windows\\System32\\rundll32.exe \"C:\\Windows\\System32\\deskn.cpl\",OpenDisplayPropertiesW"
