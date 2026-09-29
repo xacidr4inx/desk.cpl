@@ -20,6 +20,7 @@ private:
     BEGIN_MSG_MAP(CThemeDlgProc)
         MESSAGE_HANDLER(WM_INITDIALOG, OnInitDialog)
         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
+        MESSAGE_HANDLER(WM_TIMER, OnTimer)
         COMMAND_HANDLER(1101, CBN_SELCHANGE, OnThemeComboboxChange)
         COMMAND_HANDLER(1107, BN_CLICKED, OnSaveAs)
         COMMAND_HANDLER(1108, BN_CLICKED, OnDelete)
@@ -28,6 +29,7 @@ private:
 
     BOOL OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     BOOL OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    BOOL OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     BOOL OnThemeComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
     BOOL OnSaveAs(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
     BOOL OnDelete(UINT code, UINT id, HWND hWnd, BOOL& bHandled);
@@ -42,6 +44,7 @@ private:
     int FindThemeComboIndex(int themeIndex) const;
     void UpdateDeleteButton();
     void PopulateThemeCombo(int selectedIndex);
+    void FinalizeClassicMetrics(const SCHEMEDATA& scheme, LPCWSTR source);
 
     /// variables
     HWND hCombobox;
@@ -63,6 +66,8 @@ private:
     bool themeApplyPending = false;
     std::wstring pendingThemeFilePath;
     std::vector<std::wstring> savedThemePaths;
+    SCHEMEDATA pendingMetricsReadback = {};
+    bool pendingMetricsReadbackValid = false;
 
     MYWINDOWINFO wnd[1] =
     {

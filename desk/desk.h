@@ -116,6 +116,8 @@ extern FONTINFO* fontInfo;
 extern BOOL themeSelected;
 extern volatile LONG g_currentSessionModified;
 extern volatile LONG g_themeSelectionInProgress;
+// Desktop page edits must also participate in the Themes page's apply pass.
+extern bool g_desktopThemeApplyPending;
 
 // Loads the theme and the matching color/metric scheme before any property
 // page is created.  The property pages use this shared state for previews.

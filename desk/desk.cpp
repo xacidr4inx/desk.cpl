@@ -25,6 +25,7 @@ FONTINFO* fontInfo = new FONTINFO();
 BOOL themeSelected = FALSE;
 volatile LONG g_currentSessionModified = FALSE;
 volatile LONG g_themeSelectionInProgress = FALSE;
+bool g_desktopThemeApplyPending = false;
 
 namespace
 {

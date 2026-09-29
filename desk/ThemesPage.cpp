@@ -34,6 +34,8 @@ constexpr LPCWSTR CURRENT_THEME_KEY =
 	L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\CurrentTheme";
 constexpr LPCWSTR MODIFIED_THEME_VALUE = L"DisplayName of Modified";
 constexpr LPCWSTR MODIFIED_THEME_SUFFIX = L" (Modified)";
+constexpr UINT_PTR CLASSIC_METRICS_EARLY_TIMER = 0xD35C;
+constexpr UINT_PTR CLASSIC_METRICS_LATE_TIMER = 0xD35D;
 
 std::wstring MakeThemeFileFilter()
 {
@@ -73,6 +75,37 @@ void LogThemeApplyDebug(LPCWSTR format, ...)
 	WriteFile(file, line, static_cast<DWORD>(lstrlenW(line) * sizeof(WCHAR)),
 		&written, nullptr);
 	CloseHandle(file);
+}
+
+void LogClassicMetricsReadback(LPCWSTR stage, const SCHEMEDATA& scheme, int dpi)
+{
+	NONCLIENTMETRICSW expected = {};
+	memcpy(&expected, &scheme.ncm, sizeof(scheme.ncm));
+	expected.cbSize = sizeof(expected);
+	expected.iPaddedBorderWidth = MulDiv(scheme.iPaddedBorderWidth, dpi, 96);
+	if (!scheme.dpiScaled)
+		ScaleNonClientMetrics(expected, dpi);
+	else
+	{
+		ScaleLogFont(expected.lfCaptionFont, dpi);
+		ScaleLogFont(expected.lfSmCaptionFont, dpi);
+		ScaleLogFont(expected.lfMenuFont, dpi);
+		ScaleLogFont(expected.lfStatusFont, dpi);
+		ScaleLogFont(expected.lfMessageFont, dpi);
+	}
+	NONCLIENTMETRICSW actual = { sizeof(actual) };
+	BOOL readOk = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS,
+		sizeof(actual), &actual, 0);
+	LogThemeApplyDebug(
+		L"Classic metrics stage=%ls tick=%u scheme=%ls dpi=%d read=%d "
+		L"caption=%d/%d menu=%d/%d border=%d/%d scroll=%d/%d "
+		L"captionFont=%d/%d",
+		stage, GetTickCount(), scheme.name, dpi, readOk,
+		actual.iCaptionHeight, expected.iCaptionHeight,
+		actual.iMenuHeight, expected.iMenuHeight,
+		actual.iBorderWidth, expected.iBorderWidth,
+		actual.iScrollWidth, expected.iScrollWidth,
+		actual.lfCaptionFont.lfHeight, expected.lfCaptionFont.lfHeight);
 }
 
 struct THEME_NONCLIENTMETRICSA
@@ -363,16 +396,54 @@ LSTATUS ApplyClassicScheme(HWND hwnd, int dpi, SCHEMEDATA* scheme,
 	ScaleNonClientMetrics(ncm, dpi);
 	LOGFONT iconFont = scheme->lfIconTitle;
 	ScaleLogFont(iconFont, dpi);
-	if (!SystemParametersInfoW(SPI_SETICONTITLELOGFONT, sizeof(iconFont), &iconFont,
-		SPIF_UPDATEINIFILE | SPIF_SENDCHANGE))
-		return GetLastError() ? GetLastError() : ERROR_GEN_FAILURE;
-	if (!SystemParametersInfoW(SPI_SETNONCLIENTMETRICS, sizeof(ncm), &ncm,
-		SPIF_UPDATEINIFILE | SPIF_SENDCHANGE))
-		return GetLastError() ? GetLastError() : ERROR_GEN_FAILURE;
-	int elements[colorCount];
-	for (int i = 0; i < colorCount; ++i) elements[i] = i;
-	if (!SetSysColors(colorCount, elements, colors))
-		return GetLastError() ? GetLastError() : ERROR_GEN_FAILURE;
+
+	// All three setters broadcast synchronously. A single hung window can hold
+	// the property sheet here for Windows' broadcast timeout (often 20 seconds).
+	// The values are applied before those broadcasts, so let a detached worker
+	// perform them while the applet finishes the theme switch immediately.
+	struct ClassicSchemeApplyJob
+	{
+		LOGFONT iconFont;
+		NONCLIENTMETRICSW metrics;
+		int colorCount;
+		int elements[COLOR_MENUBAR + 1];
+		COLORREF colors[COLOR_MENUBAR + 1];
+	};
+	ClassicSchemeApplyJob* job = static_cast<ClassicSchemeApplyJob*>(
+		HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(ClassicSchemeApplyJob)));
+	if (!job) return ERROR_NOT_ENOUGH_MEMORY;
+	job->iconFont = iconFont;
+	job->metrics = ncm;
+	job->colorCount = colorCount;
+	for (int i = 0; i < colorCount; ++i)
+	{
+		job->elements[i] = i;
+		job->colors[i] = colors[i];
+	}
+	HANDLE worker = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD
+	{
+		ClassicSchemeApplyJob* apply = static_cast<ClassicSchemeApplyJob*>(param);
+		DWORD start = GetTickCount();
+		BOOL iconApplied = SystemParametersInfoW(SPI_SETICONTITLELOGFONT,
+			sizeof(apply->iconFont), &apply->iconFont,
+			SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+		BOOL metricsApplied = SystemParametersInfoW(SPI_SETNONCLIENTMETRICS,
+			sizeof(apply->metrics), &apply->metrics,
+			SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+		BOOL colorsApplied = SetSysColors(apply->colorCount,
+			apply->elements, apply->colors);
+		LogThemeApplyDebug(L"Classic scheme worker icon=%d metrics=%d colors=%d elapsed=%u ms",
+			iconApplied, metricsApplied, colorsApplied, GetTickCount() - start);
+		HeapFree(GetProcessHeap(), 0, apply);
+		return 0;
+	}, job, 0, nullptr);
+	if (!worker)
+	{
+		DWORD error = GetLastError();
+		HeapFree(GetProcessHeap(), 0, job);
+		return error ? error : ERROR_GEN_FAILURE;
+	}
+	CloseHandle(worker);
 	UNREFERENCED_PARAMETER(hwnd);
 	return ERROR_SUCCESS;
 }
@@ -702,6 +773,48 @@ bool IsAvailableThemeFile(LPCWSTR path)
 		StrCmpIW(PathFindExtensionW(path), L".theme") == 0 && PathFileExistsW(path);
 }
 
+bool ThemeFilesHaveSameContents(LPCWSTR firstPath, LPCWSTR secondPath)
+{
+	if (!firstPath || !secondPath || !firstPath[0] || !secondPath[0]) return false;
+	if (StrCmpIW(firstPath, secondPath) == 0) return true;
+
+	constexpr DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+	HANDLE first = CreateFileW(firstPath, GENERIC_READ, shareMode, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (first == INVALID_HANDLE_VALUE) return false;
+	HANDLE second = CreateFileW(secondPath, GENERIC_READ, shareMode, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (second == INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(first);
+		return false;
+	}
+
+	LARGE_INTEGER firstSize = {};
+	LARGE_INTEGER secondSize = {};
+	bool same = GetFileSizeEx(first, &firstSize) &&
+		GetFileSizeEx(second, &secondSize) &&
+		firstSize.QuadPart == secondSize.QuadPart;
+	BYTE firstBuffer[4096] = {};
+	BYTE secondBuffer[4096] = {};
+	LONGLONG remaining = firstSize.QuadPart;
+	while (same && remaining > 0)
+	{
+		DWORD chunk = remaining < static_cast<LONGLONG>(sizeof(firstBuffer))
+			? static_cast<DWORD>(remaining) : sizeof(firstBuffer);
+		DWORD firstRead = 0;
+		DWORD secondRead = 0;
+		same = ReadFile(first, firstBuffer, chunk, &firstRead, nullptr) &&
+			ReadFile(second, secondBuffer, chunk, &secondRead, nullptr) &&
+			firstRead == chunk && secondRead == chunk &&
+			memcmp(firstBuffer, secondBuffer, chunk) == 0;
+		remaining -= chunk;
+	}
+	CloseHandle(second);
+	CloseHandle(first);
+	return same;
+}
+
 bool IsSystemThemeFilePath(LPCWSTR path)
 {
 	if (!path || !path[0]) return false;
@@ -940,10 +1053,54 @@ void GetModifiedThemeComboLabel(LPCWSTR parentName, WCHAR (&label)[MAX_PATH])
 
 bool IsNonDeletableBuiltinTheme(LPCWSTR name)
 {
-	return IsDefaultBlueTheme(name) || IsWindowsClassicThemeName(name) ||
-		(name && (StrCmpIW(name, L"Zune") == 0 ||
-			StrCmpIW(name, L"Royale") == 0 ||
-			StrCmpIW(name, L"Royale Noir") == 0));
+    return IsDefaultBlueTheme(name) || IsWindowsClassicThemeName(name);
+}
+
+// Theme Manager's saved-path registry value can point at an unrelated user
+// theme. Identify installed themes from the actual system Themes directory,
+// not that potentially stale value or a fixed list of bundled theme names.
+bool IsInstalledSystemThemeName(LPCWSTR name)
+{
+    if (!name || !name[0]) return false;
+    WCHAR windowsDir[MAX_PATH] = {};
+    UINT length = GetWindowsDirectoryW(windowsDir, ARRAYSIZE(windowsDir));
+    if (!length || length >= ARRAYSIZE(windowsDir)) return false;
+    WCHAR directory[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(directory, ARRAYSIZE(directory),
+        L"%s\\Resources\\Themes", windowsDir))) return false;
+    WCHAR pattern[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(pattern, ARRAYSIZE(pattern),
+        L"%s\\*.theme", directory))) return false;
+
+    WIN32_FIND_DATAW findData = {};
+    HANDLE find = FindFirstFileW(pattern, &findData);
+    if (find == INVALID_HANDLE_VALUE) return false;
+    bool matched = false;
+    do
+    {
+        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        WCHAR fileName[MAX_PATH] = {};
+        StringCchCopyW(fileName, ARRAYSIZE(fileName), findData.cFileName);
+        PathRemoveExtensionW(fileName);
+        if (StrCmpIW(fileName, name) == 0)
+        {
+            matched = true;
+            break;
+        }
+        WCHAR path[MAX_PATH] = {};
+        if (FAILED(StringCchPrintfW(path, ARRAYSIZE(path),
+            L"%s\\%s", directory, findData.cFileName))) continue;
+        WCHAR displayName[MAX_PATH] = {};
+        GetPrivateProfileStringW(L"Theme", L"DisplayName", L"",
+            displayName, ARRAYSIZE(displayName), path);
+        if (StrCmpIW(displayName, name) == 0)
+        {
+            matched = true;
+            break;
+        }
+    } while (FindNextFileW(find, &findData));
+    FindClose(find);
+    return matched;
 }
 
 bool IsHiddenBuiltinTheme(LPCWSTR name)
@@ -960,8 +1117,8 @@ bool IsHiddenBuiltinTheme(LPCWSTR name)
 
 bool IsStockBuiltinTheme(LPCWSTR name)
 {
-	return IsNonDeletableBuiltinTheme(name) || IsHiddenBuiltinTheme(name) ||
-		(name && StrCmpIW(name, L"Embedded") == 0);
+    return IsNonDeletableBuiltinTheme(name) || IsHiddenBuiltinTheme(name) ||
+        IsInstalledSystemThemeName(name);
 }
 
 bool IsBundledSystemThemeFile(LPCWSTR path, LPCWSTR displayName)
@@ -996,7 +1153,11 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 		SendMessageW(hCombobox, WM_SETREDRAW, FALSE, 0);
 	ComboBox_ResetContent(hCombobox);
 	savedThemePaths.clear();
-	currentThemeIndex = selectedIndex;
+	// selectedIndex can be a theme being previewed, not the live theme.
+	// The synthetic Current/Modified rows must never inherit that index.
+	currentThemeIndex = -1;
+	if (pThemeManager)
+		pThemeManager->GetCurrentTheme(&currentThemeIndex);
 	int count = 0;
 	if (FAILED(pThemeManager->GetThemeCount(&count))) count = 0;
 	int defaultThemeIndex = -1;
@@ -1021,7 +1182,10 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 			}
 		}
 	}
-	const bool derivativeModified = currentThemeDerivativeModified;
+	// A Desktop edit can make the eventual result Modified, but it must not
+	// replace a theme that is still queued for this Apply.
+	const bool derivativeModified = currentThemeDerivativeModified &&
+		!themeApplyPending;
 	const bool classic = selectedTheme && selectedTheme->szMsstylePath == L"(classic)";
 	int selectedComboIndex = CB_ERR;
 	int defaultBlueComboIndex = CB_ERR;
@@ -1127,7 +1291,8 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 		}
 		const bool defaultBlueTheme = IsDefaultBlueTheme(name);
 		const bool windowsClassicTheme = IsWindowsClassicThemeName(name);
-		const bool nonDeletableBuiltin = IsNonDeletableBuiltinTheme(name);
+        const bool nonDeletableBuiltin = IsNonDeletableBuiltinTheme(name) ||
+            IsInstalledSystemThemeName(name);
 		const bool zuneTheme = StrCmpIW(name, L"Zune") == 0;
 		const bool royaleTheme = StrCmpIW(name, L"Royale") == 0;
 		const bool royaleNoirTheme = StrCmpIW(name, L"Royale Noir") == 0;
@@ -1220,39 +1385,41 @@ void CThemeDlgProc::PopulateThemeCombo(int selectedIndex)
 		for (int i = 0; i < ComboBox_GetCount(hCombobox); ++i)
 		{
 			WCHAR existingPath[MAX_PATH] = {};
+			WCHAR existingName[MAX_PATH] = {};
 			LPARAM itemData = ComboBox_GetItemData(hCombobox, i);
+			if (ComboBox_GetLBText(hCombobox, i, existingName) == CB_ERR)
+				continue;
 			if (itemData == THEME_COMBO_SAVED_FILE &&
 				i < static_cast<int>(savedThemePaths.size()))
 				StringCchCopyW(existingPath, ARRAYSIZE(existingPath), savedThemePaths[i].c_str());
 			else if (itemData >= 0)
 			{
 				ComPtr<ITheme10> existingTheme;
-				LPWSTR existingName = nullptr;
-				if (SUCCEEDED(pThemeManager->GetTheme(static_cast<int>(itemData), &existingTheme)) &&
-					existingTheme && SUCCEEDED(existingTheme->get_DisplayName(&existingName)) &&
-					IsUnsavedThemeEntry(existingName))
-					continue;
+				pThemeManager->GetTheme(static_cast<int>(itemData), &existingTheme);
 				if (!existingTheme || !GetRegisteredThemeFilePath(existingTheme.Get(), existingPath))
 					GetDeletableThemePath(i, existingPath);
 			}
-			if (existingPath[0] && StrCmpIW(existingPath, candidate) == 0)
+			if (existingPath[0] &&
+				(StrCmpIW(existingPath, candidate) == 0 ||
+					(StrCmpIW(existingName, savedName) == 0 &&
+						ThemeFilesHaveSameContents(existingPath, candidate))))
 			{
-				// A manager row may resolve to the same file while displaying a
-				// transient current-state name. Only consider
-				// that a duplicate when the actual visible row is the saved name.
+				// A manager row can have an underlying "Unsaved Theme" name but
+				// still represent this saved file. Compare its visible name and
+				// contents; distinct themes with the same label remain listed.
 				if (itemData == THEME_COMBO_SAVED_FILE)
 				{
 					if (selectedSavedThemePath[0] &&
-						StrCmpIW(selectedSavedThemePath, candidate) == 0)
+						(StrCmpIW(selectedSavedThemePath, candidate) == 0 ||
+							ThemeFilesHaveSameContents(selectedSavedThemePath, candidate)))
 						selectedComboIndex = i;
 					return;
 				}
-				WCHAR existingName[MAX_PATH] = {};
-				if (ComboBox_GetLBText(hCombobox, i, existingName) != CB_ERR &&
-					StrCmpIW(existingName, savedName) == 0)
+				if (StrCmpIW(existingName, savedName) == 0)
 				{
 					if (selectedSavedThemePath[0] &&
-						StrCmpIW(selectedSavedThemePath, candidate) == 0)
+						(StrCmpIW(selectedSavedThemePath, candidate) == 0 ||
+							ThemeFilesHaveSameContents(selectedSavedThemePath, candidate)))
 						selectedComboIndex = i;
 					return;
 				}
@@ -1364,15 +1531,25 @@ int CThemeDlgProc::GetThemeIndexFromCombo(int comboIndex) const
 	if (comboIndex < 0 || comboIndex >= ComboBox_GetCount(hCombobox)) return -1;
 	LPARAM itemData = ComboBox_GetItemData(hCombobox, comboIndex);
 	if (itemData == THEME_COMBO_STARTUP_BASELINE) return startupThemeIndex;
-	if (itemData == THEME_COMBO_SESSION_MODIFIED) return currentThemeIndex;
-	if (itemData == THEME_COMBO_CURRENT) return currentThemeIndex;
+	if (itemData == THEME_COMBO_SESSION_MODIFIED ||
+		itemData == THEME_COMBO_CURRENT)
+	{
+		// Theme Manager can replace/reorder its current entry after a page
+		// applies. Resolve synthetic rows from its live selection, not from a
+		// prior PopulateThemeCombo preview.
+		int activeIndex = -1;
+		return pThemeManager &&
+			SUCCEEDED(pThemeManager->GetCurrentTheme(&activeIndex))
+			? activeIndex : -1;
+	}
 	if (itemData == THEME_COMBO_SAVED_FILE) return static_cast<int>(itemData);
 	return itemData < 0 || itemData == CB_ERR ? -1 : static_cast<int>(itemData);
 }
 
 int CThemeDlgProc::FindThemeComboIndex(int themeIndex) const
 {
-	const bool sessionModified = currentThemeDerivativeModified;
+	const bool sessionModified = currentThemeDerivativeModified &&
+		!themeApplyPending;
 	for (int comboIndex = 0; comboIndex < ComboBox_GetCount(hCombobox); ++comboIndex)
 	{
 		LPARAM itemData = ComboBox_GetItemData(hCombobox, comboIndex);
@@ -1560,11 +1737,49 @@ BOOL CThemeDlgProc::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& 
 
 BOOL CThemeDlgProc::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
+	KillTimer(CLASSIC_METRICS_EARLY_TIMER);
+	KillTimer(CLASSIC_METRICS_LATE_TIMER);
 	if (g_themePageForApply == this)
 		g_themePageForApply = nullptr;
 	pWndPreview = nullptr;
 	currentRegistryScheme = nullptr;
 	return 0;
+}
+
+BOOL CThemeDlgProc::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+{
+	if (wParam != CLASSIC_METRICS_EARLY_TIMER &&
+		wParam != CLASSIC_METRICS_LATE_TIMER)
+	{
+		bHandled = FALSE;
+		return 0;
+	}
+	KillTimer(static_cast<UINT_PTR>(wParam));
+	if (pendingMetricsReadbackValid)
+		LogClassicMetricsReadback(wParam == CLASSIC_METRICS_EARLY_TIMER
+			? L"after-1500ms" : L"after-20000ms",
+			pendingMetricsReadback, GetDpiForWindow(m_hWnd));
+	return 0;
+}
+
+void CThemeDlgProc::FinalizeClassicMetrics(const SCHEMEDATA& scheme, LPCWSTR source)
+{
+	const int dpi = GetDpiForWindow(m_hWnd);
+	LogThemeApplyDebug(L"Final Classic metrics source=%ls", source);
+	LogClassicMetricsReadback(L"before-final-reapply", scheme, dpi);
+	const bool applied = ApplySchemeMetrics(&scheme, dpi);
+	LogThemeApplyDebug(L"Final Classic metrics ApplySchemeMetrics=%d error=%u",
+		applied, applied ? 0 : GetLastError());
+	LogClassicMetricsReadback(L"after-final-reapply", scheme, dpi);
+	if (applied)
+	{
+		pendingMetricsReadback = scheme;
+		pendingMetricsReadbackValid = true;
+		if (!SetTimer(CLASSIC_METRICS_EARLY_TIMER, 1500) ||
+			!SetTimer(CLASSIC_METRICS_LATE_TIMER, 20000))
+			LogThemeApplyDebug(L"Could not schedule delayed Classic metrics readback error=%u",
+				GetLastError());
+	}
 }
 
 bool CThemeDlgProc::IsStartupThemeSnapshotSelected() const
@@ -1612,7 +1827,10 @@ void CThemeDlgProc::OnPropertySheetChanged()
 {
 	if (!hCombobox || currentThemeIndex < 0) return;
 	currentThemeDerivativeModified = true;
-	PopulateThemeCombo(currentThemeIndex);
+	// Desktop changes are applied after the Themes page. Keep its queued
+	// selection intact until OnApply has passed it to Theme Manager.
+	if (!themeApplyPending)
+		PopulateThemeCombo(currentThemeIndex);
 }
 
 void CThemeDlgProc::PersistModifiedStateAfterApply()
@@ -1649,6 +1867,9 @@ void PersistThemeModifiedStateAfterApply()
 
 BOOL CThemeDlgProc::OnThemeComboboxChange(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 {
+	KillTimer(CLASSIC_METRICS_EARLY_TIMER);
+	KillTimer(CLASSIC_METRICS_LATE_TIMER);
+	pendingMetricsReadbackValid = false;
 	ScopedThemeSelection selectionScope;
 	int comboIndex = ComboBox_GetCurSel(hCombobox);
 	LPARAM selectedItem = comboIndex == CB_ERR ? CB_ERR : ComboBox_GetItemData(hCombobox, comboIndex);
@@ -2140,8 +2361,9 @@ bool CThemeDlgProc::GetDeletableThemePath(int themeIndex, WCHAR (&path)[MAX_PATH
 	if (FAILED(pThemeManager->GetTheme(themeIndex, &theme)) || !theme)
 		return false;
 	LPWSTR themeName = nullptr;
-	if (SUCCEEDED(theme->get_DisplayName(&themeName)) &&
-		IsNonDeletableBuiltinTheme(themeName))
+    if (SUCCEEDED(theme->get_DisplayName(&themeName)) &&
+        (IsNonDeletableBuiltinTheme(themeName) ||
+            IsInstalledSystemThemeName(themeName)))
 		return false;
 	if (IsUnsavedThemeEntry(themeName))
 		return false;
@@ -2153,7 +2375,8 @@ bool CThemeDlgProc::GetDeletableThemePath(int themeIndex, WCHAR (&path)[MAX_PATH
 		if (RegGetValueW(HKEY_CURRENT_USER, keyPath, L"Path", RRF_RT_REG_SZ,
 			nullptr, path, &size) == ERROR_SUCCESS && PathFileExistsW(path) &&
 			StrCmpIW(PathFindExtensionW(path), L".theme") == 0)
-			return !IsReservedCurrentThemeFile(path);
+            return !IsReservedCurrentThemeFile(path) &&
+                !IsSystemThemeFilePath(path);
 		path[0] = L'\0';
 	}
 
@@ -2263,10 +2486,18 @@ BOOL CThemeDlgProc::OnDelete(UINT code, UINT id, HWND hWnd, BOOL& bHandled)
 
 BOOL CThemeDlgProc::OnApply()
 {
-	// Avoid calling Theme Manager for wallpaper-only (or other-page-only)
-	// applies. SetCurrentTheme reapplies the selected theme's msstyles.
-	if (!themeApplyPending)
+	// XP's Desktop page applies the pending theme along with its wallpaper,
+	// position, and colour changes. Other pages alone need no theme apply.
+	const bool desktopThemeApplyPending = g_desktopThemeApplyPending ||
+		(selectedTheme && (selectedTheme->customWallpaperSelection ||
+		selectedTheme->posChanged != -1 ||
+		selectedTheme->newColor != 0xB0000000 ||
+		selectedTheme->fCustomDesktopColorPending));
+	if (!themeApplyPending && !desktopThemeApplyPending)
 		return 0;
+	KillTimer(CLASSIC_METRICS_EARLY_TIMER);
+	KillTimer(CLASSIC_METRICS_LATE_TIMER);
+	pendingMetricsReadbackValid = false;
 
 	// default apply flag, when applied in windows (ignore nothing)
 	ULONG apply_flags = 0;
@@ -2275,6 +2506,7 @@ BOOL CThemeDlgProc::OnApply()
 		comboIndex != CB_ERR &&
 		!pendingThemeFilePath.empty() &&
 		(ComboBox_GetItemData(hCombobox, comboIndex) == THEME_COMBO_SAVED_FILE ||
+			ComboBox_GetItemData(hCombobox, comboIndex) == THEME_COMBO_SESSION_MODIFIED ||
 			(ComboBox_GetItemData(hCombobox, comboIndex) == THEME_COMBO_STARTUP_BASELINE &&
 				StrCmpIW(pendingThemeFilePath.c_str(), startupThemeSnapshotPath.c_str()) == 0));
 	const bool applyingStartupSnapshot = applySavedThemeFile &&
@@ -2324,6 +2556,10 @@ BOOL CThemeDlgProc::OnApply()
 		SCHEMEDATA classicFileScheme = {};
 		const bool hasClassicFileScheme = LoadClassicSchemeFromThemeFile(
 			pendingThemeFilePath.c_str(), classicFileScheme);
+		bool classicSchemeApplied = false;
+		LogThemeApplyDebug(L"Saved-file scheme source=%ls loaded=%d name=%ls",
+			pendingThemeFilePath.c_str(), hasClassicFileScheme,
+			hasClassicFileScheme ? classicFileScheme.name : L"(none)");
 		selectedTheme->classicSchemeSourcePath = pendingThemeFilePath;
 		DWORD cleanupResult = RemoveGeneratedThemeCopyWithoutConfirmation(
 			pendingThemeFilePath.c_str());
@@ -2367,12 +2603,21 @@ BOOL CThemeDlgProc::OnApply()
 				auto activeTheme = std::make_unique<CTheme>(currentITheme);
 				LPWSTR wallpaper = nullptr;
 				activeTheme->get_background(&wallpaper);
-				UpdateThemeInfo(wallpaper);
+				// The Desktop page still has to process its pending edits after this
+				// page's PSN_APPLY. Do not clear its wallpaper/color/position flags
+				// while refreshing the selected file's theme information.
+				if (!selectedTheme->customWallpaperSelection &&
+					selectedTheme->posChanged == -1 &&
+					selectedTheme->newColor == 0xB0000000 &&
+					!selectedTheme->fCustomDesktopColorPending)
+					UpdateThemeInfo(wallpaper);
 
 				LPWSTR activeStylePath = nullptr;
 				activeTheme->get_VisualStyle(&activeStylePath);
 				HANDLE previewTheme = activeStylePath && PathFileExistsW(activeStylePath)
 					? LoadThemeFromFilePath(activeStylePath) : nullptr;
+				LogThemeApplyDebug(L"Saved-file active style=%ls previewTheme=%d",
+					activeStylePath ? activeStylePath : L"(none)", previewTheme != nullptr);
 				if (previewTheme)
 				{
 					selectedTheme->szMsstylePath = activeStylePath;
@@ -2397,6 +2642,9 @@ BOOL CThemeDlgProc::OnApply()
 						LSTATUS schemeStatus = ApplyClassicScheme(m_hWnd,
 							GetDpiForWindow(m_hWnd), &classicFileScheme,
 							pendingThemeFilePath.c_str());
+						classicSchemeApplied = schemeStatus == ERROR_SUCCESS;
+						LogThemeApplyDebug(L"Saved-file Classic scheme apply status=%ld",
+							schemeStatus);
 						if (schemeStatus != ERROR_SUCCESS)
 						{
 							WCHAR message[256] = {};
@@ -2455,6 +2703,8 @@ BOOL CThemeDlgProc::OnApply()
 				LogThemeApplyDebug(L"Could not select applied theme file row source=%ls active=%d",
 					pendingThemeFilePath.c_str(), activeIndex);
 		}
+		if (classicSchemeApplied)
+			FinalizeClassicMetrics(classicFileScheme, pendingThemeFilePath.c_str());
 		pendingThemeFilePath.clear();
 		themeApplyPending = false;
 		SetModified(FALSE);
@@ -2474,6 +2724,10 @@ BOOL CThemeDlgProc::OnApply()
 	SCHEMEDATA savedManagerClassicScheme = {};
 	const bool hasSavedManagerClassicScheme = applyingSavedManagerTheme && applyClassicTheme &&
 		LoadClassicSchemeFromThemeFile(selectedSavedThemePath, savedManagerClassicScheme);
+	SCHEMEDATA appliedClassicScheme = {};
+	bool classicSchemeApplied = false;
+	LogThemeApplyDebug(L"Manager scheme classic=%d savedScheme=%d source=%ls",
+		applyClassicTheme, hasSavedManagerClassicScheme, selectedSavedThemePath);
 	HRESULT applyResult = E_UNEXPECTED;
 	if (applyingSavedManagerTheme)
 	{
@@ -2517,6 +2771,8 @@ BOOL CThemeDlgProc::OnApply()
 				schemeToApply, hasSavedManagerClassicScheme
 					? selectedSavedThemePath : nullptr)
 			: ApplyWindowsStandardClassicScheme(m_hWnd, GetDpiForWindow(m_hWnd));
+		LogThemeApplyDebug(L"Manager Classic scheme apply status=%ld scheme=%ls",
+			schemeStatus, schemeToApply ? schemeToApply->name : L"(none)");
 		if (schemeStatus != ERROR_SUCCESS)
 		{
 			WCHAR message[256] = {};
@@ -2529,6 +2785,8 @@ BOOL CThemeDlgProc::OnApply()
 		}
 		else
 		{
+			appliedClassicScheme = *schemeToApply;
+			classicSchemeApplied = true;
 			currentRegistryScheme = LoadCurrentClassicSchemeFromRegistry();
 			if (selectedTheme->selectedScheme &&
 				selectedTheme->selectedScheme != currentRegistryScheme &&
@@ -2597,6 +2855,9 @@ BOOL CThemeDlgProc::OnApply()
 			}
 		}
 	}
+	if (classicSchemeApplied)
+		FinalizeClassicMetrics(appliedClassicScheme, applyingSavedManagerTheme
+			? selectedSavedThemePath : L"(manager Classic)");
 	themeApplyPending = false;
 	SetModified(FALSE);
 	return 0;

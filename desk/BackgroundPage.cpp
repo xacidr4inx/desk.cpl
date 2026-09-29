@@ -657,6 +657,7 @@ BOOL CBackgroundDlgProc::OnBgSizeChange(UINT code, UINT id, HWND hWnd, BOOL& bHa
 	_UpdatePreview(UPDATE_WALLPAPER);
 
 	wallpaperApplyPending = true;
+	g_desktopThemeApplyPending = true;
 	SetModified(TRUE);
 	return 0;
 }
@@ -751,6 +752,7 @@ LRESULT CBackgroundDlgProc::OnOpenColorPalette(UINT, WPARAM wParam, LPARAM, BOOL
 		_UpdatePreview(UPDATE_SOLIDCLR);
 
 		wallpaperApplyPending = true;
+		g_desktopThemeApplyPending = true;
 		SetModified(TRUE);
 	}
 	return 0;
@@ -828,6 +830,7 @@ BOOL CBackgroundDlgProc::OnWallpaperSelection(WPARAM wParam, LPNMHDR nmhdr, BOOL
 
 		_UpdatePreview(UPDATE_WALLPAPER | UPDATE_SOLIDCLR);
 		wallpaperApplyPending = true;
+		g_desktopThemeApplyPending = true;
 		SetModified(TRUE);
 
 	}
@@ -850,6 +853,7 @@ BOOL CBackgroundDlgProc::OnWallpaperSelection(WPARAM wParam, LPNMHDR nmhdr, BOOL
 
 		_UpdatePreview(UPDATE_WALLPAPER | UPDATE_SOLIDCLR);
 		wallpaperApplyPending = true;
+		g_desktopThemeApplyPending = true;
 		SetModified(TRUE);
 	}
 	else if (pnmv->uOldState & LVIS_SELECTED && selCount > 1)
@@ -900,6 +904,7 @@ BOOL CBackgroundDlgProc::OnAddSlideshowItems(UINT, WPARAM, LPARAM lParam, BOOL&)
 	CoTaskMemFree(path);
 	fWallpaperApply = FALSE;
 	wallpaperApplyPending = false;
+	g_desktopThemeApplyPending = false;
 	SetModified(FALSE);
 	return 0;
 }
@@ -992,6 +997,7 @@ BOOL CBackgroundDlgProc::OnApply()
 	}
 
 	wallpaperApplyPending = false;
+	g_desktopThemeApplyPending = false;
 	SetModified(FALSE);
 	return 0;
 }
@@ -1128,6 +1134,7 @@ void CBackgroundDlgProc::SelectCurrentWallpaper()
 	}
 
 	wallpaperApplyPending = false;
+	g_desktopThemeApplyPending = false;
 	SetModified(FALSE);
 }
 
