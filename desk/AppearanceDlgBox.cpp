@@ -238,10 +238,13 @@ BOOL CAppearanceDlgBox::OnSpinnerChange(UINT code, UINT id, HWND hWnd, BOOL& bHa
 
 	if (tinfo && tinfo->activeButton & ACTIVE_SIZEITEM)
 	{
-		int value = GetDlgItemInt(id);
+		BOOL valid = FALSE;
+		int value = GetDlgItemInt(id, &valid, FALSE);
+		// EN_CHANGE also fires while the field is empty. Preserve an entered 0.
+		if (!valid) return 0;
 		NcUpdateSystemMetrics(tinfo->sizeTarget, value);
 
-		if (tinfo->sizeTarget == SM_CYVSCROLL) NcUpdateSystemMetrics(SM_CXVSCROLL, value);
+		if (tinfo->sizeTarget == SM_CYHSCROLL) NcUpdateSystemMetrics(SM_CXVSCROLL, value);
 		if (tinfo->sizeTarget == SM_CYSIZE) NcUpdateSystemMetrics(SM_CXSIZE, value);
 
 		_UpdatePreview(FALSE);

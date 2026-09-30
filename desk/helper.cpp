@@ -473,7 +473,8 @@ void CreateThemedMetricsScheme(int dpi, void* pTheme)
 	GetThemeSysFont(hTheme, TMT_ICONTITLEFONT, &selectedTheme->selectedScheme->lfIconTitle);
 
 	selectedTheme->selectedScheme->ncm.iBorderWidth = GetThemeSysSize(hTheme, SM_CXBORDER);
-	selectedTheme->selectedScheme->ncm.iScrollHeight = GetThemeSysSize(hTheme, SM_CYVSCROLL);
+	// iScrollHeight is the horizontal scrollbar height, not the arrow height.
+	selectedTheme->selectedScheme->ncm.iScrollHeight = GetThemeSysSize(hTheme, SM_CYHSCROLL);
 	selectedTheme->selectedScheme->ncm.iScrollWidth = GetThemeSysSize(hTheme, SM_CXVSCROLL);
 	selectedTheme->selectedScheme->ncm.iCaptionHeight = GetThemeSysSize(hTheme, SM_CYSIZE);
 	selectedTheme->selectedScheme->ncm.iCaptionWidth = GetThemeSysSize(hTheme, SM_CXSIZE);

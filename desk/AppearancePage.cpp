@@ -282,12 +282,36 @@ static bool MsstylePathsMatch(LPCWSTR firstPath, LPCWSTR secondPath)
 		StrCmpIW(firstResolved, secondResolved) == 0;
 }
 
+static constexpr LPCWSTR APPEARANCE_CUSTOM_STYLE = L"(custom-msstyles)";
+
 static std::wstring MsstyleGroupPath(LPCWSTR stylePath)
 {
 	WCHAR resolved[MAX_PATH] = {};
 	if (!ResolveMsstylePath(stylePath, resolved) || !PathRemoveFileSpecW(resolved))
 		return {};
-	return resolved;
+
+	// Only styles directly in the installed XP-era category folders get their
+	// own group. Other files, including styles outside the system Themes tree,
+	// share the Custom group while retaining their individual color entries.
+	WCHAR windowsDirectory[MAX_PATH] = {};
+	WCHAR categoryPath[MAX_PATH] = {};
+	if (GetWindowsDirectoryW(windowsDirectory, ARRAYSIZE(windowsDirectory)))
+	{
+		const UINT categoryFolders[] = {
+			IDS_XP_STYLE_FOLDER, IDS_ROYALE_STYLE_FOLDER,
+			IDS_ZUNE, IDS_EMBEDDED_STYLE_FOLDER
+		};
+		for (UINT folderId : categoryFolders)
+		{
+			std::wstring folder = LoadDeskString(folderId);
+			if (!folder.empty() && SUCCEEDED(StringCchPrintfW(categoryPath,
+				ARRAYSIZE(categoryPath), L"%s\\Resources\\Themes\\%s",
+				windowsDirectory, folder.c_str())) &&
+				StrCmpIW(resolved, categoryPath) == 0)
+				return resolved;
+		}
+	}
+	return APPEARANCE_CUSTOM_STYLE;
 }
 
 static bool MsstyleBelongsToGroup(LPCWSTR stylePath, LPCWSTR groupPath)
@@ -299,6 +323,8 @@ static bool MsstyleBelongsToGroup(LPCWSTR stylePath, LPCWSTR groupPath)
 
 static std::wstring MsstyleGroupLabel(LPCWSTR groupPath)
 {
+	if (StrCmpIW(groupPath, APPEARANCE_CUSTOM_STYLE) == 0)
+		return LoadDeskString(IDS_CUSTOM_STYLE);
 	LPCWSTR folder = PathFindFileNameW(groupPath);
 	if (StrCmpIW(folder, LoadDeskString(IDS_XP_STYLE_FOLDER).c_str()) == 0)
 		return LoadDeskString(IDS_WINDOWS_XP_STYLE);
@@ -704,16 +730,24 @@ BOOL CAppearanceDlgProc::OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, B
 		RegCloseKey(key);
 	}
 
+	bool hasCustomStyles = false;
 	for (LPWSTR style : msstyle)
 	{
 		std::wstring groupPath = MsstyleGroupPath(style);
 		if (groupPath.empty()) continue;
+		if (StrCmpIW(groupPath.c_str(), APPEARANCE_CUSTOM_STYLE) == 0)
+		{
+			hasCustomStyles = true;
+			continue;
+		}
 		if (std::find_if(msstyleGroups.begin(), msstyleGroups.end(),
 			[&groupPath](const std::wstring& existing) {
 				return StrCmpIW(existing.c_str(), groupPath.c_str()) == 0;
 			}) == msstyleGroups.end())
 			msstyleGroups.push_back(std::move(groupPath));
 	}
+	if (hasCustomStyles)
+		msstyleGroups.push_back(APPEARANCE_CUSTOM_STYLE);
 	for (const std::wstring& groupPath : msstyleGroups)
 	{
 		std::wstring label = MsstyleGroupLabel(groupPath.c_str());

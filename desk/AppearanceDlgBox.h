@@ -169,7 +169,7 @@ private:
 		{	// scrollbar (9)
 			.activeButton = ACTIVE_SIZEITEM | ACTIVE_COLOR1,
 			.color1Target = COLOR_SCROLLBAR,		// MOD
-			.sizeTarget = SM_CYVSCROLL,				// change both
+			.sizeTarget = SM_CYHSCROLL,				// change both
 		},
 		{	// 3d object (10)
 			.activeButton = ACTIVE_COLOR1 | ACTIVE_FONTCOLOR,

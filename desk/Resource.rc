@@ -221,6 +221,8 @@ BEGIN
     IDS_XP_STYLE_FOLDER "Luna"
     IDS_ROYALE_STYLE_FOLDER "Royale"
     IDS_ROYALE_STYLE "Royale style"
+    IDS_EMBEDDED_STYLE_FOLDER "Embedded"
+    IDS_CUSTOM_STYLE "Custom style"
     IDS_LUNA_STYLE "Default (blue)"
     IDS_OLIVE_STYLE "Olive Green"
     IDS_SILVER_STYLE "Silver"
